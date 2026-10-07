@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ajantik"
-version = "0.1.0"
+version = "0.1.1"
 description = "A crash test for AI agents: what does your agent tell you when its tools lie or fail?"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +24,11 @@ dependencies = [
     "pyyaml>=6.0",
     "typer>=0.12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Ajantik/ajantik"
+Repository = "https://github.com/Ajantik/ajantik"
+Issues = "https://github.com/Ajantik/ajantik/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]

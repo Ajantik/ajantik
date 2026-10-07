@@ -37,7 +37,7 @@ open ajantik-demo/report.html
 Two scripted agents, both of which know the right answer, run against a support-ticket
 system that sometimes says "updated" and stores nothing. The blind one says "Done" anyway;
 the verifying one reads its write back and catches it. The report shows the difference cell
-by cell, down to each recorded call. More scenarios: [`examples/`](examples/README.md).
+by cell, down to each recorded call. More scenarios: [`examples/`](https://github.com/Ajantik/ajantik/blob/main/examples/README.md).
 
 ## Quick start: test an agent you do not own
 
@@ -221,6 +221,6 @@ Other commands: `identity`, `suggest`, `compare`, `instructions`, `judge-benchma
 
 ## License
 
-Code: [Apache License 2.0](LICENSE). The name "Ajantik" is not covered by it: results
+Code: [Apache License 2.0](https://github.com/Ajantik/ajantik/blob/main/LICENSE). The name "Ajantik" is not covered by it: results
 produced with this code by anyone else must not be presented as Ajantik results (see
-[NOTICE](NOTICE)). Published Ajantik result pages are CC BY 4.0.
+[NOTICE](https://github.com/Ajantik/ajantik/blob/main/NOTICE)). Published Ajantik result pages are CC BY 4.0.
