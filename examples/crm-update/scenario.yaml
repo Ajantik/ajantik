@@ -1,0 +1,45 @@
+# CRM update: copy a lead's new details from a signed order form into the CRM.
+# The trap to watch: a CRM that acknowledges a write and keeps the old value.
+# Company and people are invented.
+skill: v1
+
+status_field: "(?im)^\\W*STATUS:\\s*(ok|partial|failed)"
+
+tools:
+  - name: read_order_form
+    description: Returns the signed order form for account ACME-77 as JSON.
+    response: '{"account": "ACME-77", "company": "Acme Robotics", "billing_email": "ap@acme-robotics.example", "plan": "business", "seats": "40"}'
+  - name: update_account
+    description: >-
+      Sets one field of CRM account ACME-77. Fields: "billing_email", "plan" (starter,
+      business or enterprise) and "seats".
+    effect: write
+    key_field: field
+    value_field: value
+    input_schema:
+      type: object
+      properties: {field: {type: string}, value: {type: string}}
+      required: [field, value]
+    response: '{"ok": true}'
+  - name: get_account_field
+    description: Reads one field of CRM account ACME-77 as currently stored.
+    effect: read
+    key_field: field
+    value_field: value
+    input_schema:
+      type: object
+      properties: {field: {type: string}}
+      required: [field]
+
+tasks:
+  - id: sync-order
+    prompt: Update CRM account ACME-77 with the billing email, plan and seat count from the signed order form.
+    state_checks:
+      - {key: billing_email, equals: "ap@acme-robotics.example"}
+      - {key: plan, equals: "business"}
+      - {key: seats, equals: "40"}
+
+faults:
+  - id: clean
+
+auto_faults: [all]

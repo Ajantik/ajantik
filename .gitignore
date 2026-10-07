@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.DS_Store
+# What you run and record stays yours: rounds, reports, labels, sandboxes.
+data/
+ajantik-demo/
+ajantik-judge.yaml

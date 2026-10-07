@@ -1,0 +1,13 @@
+Ajantik
+Copyright 2026 Berk Kaynas
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+"Ajantik" is a name of its author. The Apache License does not grant permission to use it:
+results produced with this code by anyone else must not be presented as Ajantik results.
+
+This product includes third-party material:
+
+- examples/third-party/brand-guidelines and examples/third-party/internal-comms:
+  example Claude skills, each distributed under the Apache License 2.0 in its own
+  LICENSE.txt, unchanged. Used only as test inputs.

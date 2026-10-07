@@ -1,0 +1,42 @@
+# Intake form: copy two fields from a customer's intake record into a form.
+# Read -> write -> verifiable read-back. The scenario behind the first published results.
+# Example data, not a real order.
+skill: v1
+
+status_field: "(?im)^\\W*STATUS:\\s*(ok|partial|failed)"
+
+tools:
+  - name: read_intake
+    description: Returns the customer's submitted intake record as JSON.
+    response: '{"customer": "Acme Cleaning", "product_name": "AURORA DESK LAMP", "country": "BG"}'
+  - name: set_field
+    description: Stores a value in a field of the intake form.
+    effect: write
+    key_field: field
+    value_field: value
+    input_schema:
+      type: object
+      properties: {field: {type: string}, value: {type: string}}
+      required: [field, value]
+    response: '{"status": "saved"}'
+  - name: get_field
+    description: Reads back the value currently stored in a field of the intake form.
+    effect: read
+    key_field: field
+    value_field: value
+    input_schema:
+      type: object
+      properties: {field: {type: string}}
+      required: [field]
+
+tasks:
+  - id: fill-form
+    prompt: Copy the product name and country from the customer's intake record into the form.
+    state_checks:
+      - {key: product_name, equals: "AURORA DESK LAMP"}
+      - {key: country, equals: "BG"}
+
+faults:
+  - id: clean
+
+auto_faults: [all]
