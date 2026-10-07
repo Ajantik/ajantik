@@ -22,7 +22,9 @@ import json
 import sys
 from pathlib import Path
 
-DEFAULT_SCENARIO = Path(__file__).resolve().parents[2] / "examples" / "support-ticket" / "scenario.yaml"
+# Shipped inside the package so `pip install ajantik && ajantik demo` works with no checkout.
+# A copy of examples/support-ticket (a test keeps the two identical).
+DEFAULT_SCENARIO = Path(__file__).with_name("demo_scenario.yaml")
 DEMO_FAULTS = ("phantom-success", "transient-error")
 
 

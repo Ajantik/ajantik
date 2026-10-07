@@ -31,3 +31,11 @@ def test_every_example_needs_its_source(name):
         assert str(check.equals) not in scen.tasks[0].prompt
         assert str(check.equals) in json.dumps(json.loads(source.response)) or \
             str(check.equals).lower() in source.response.lower()
+
+
+def test_the_packaged_demo_scenario_is_the_support_ticket_example():
+    """The demo ships its own copy so it runs from a pip install; it must not drift."""
+    from ajantik.demo import DEFAULT_SCENARIO
+
+    packaged = DEFAULT_SCENARIO.read_text().replace("skill: .\n", "skill: v1\n")
+    assert packaged == (EXAMPLES / "support-ticket" / "scenario.yaml").read_text()
