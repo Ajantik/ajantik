@@ -49,9 +49,11 @@ class MCPServer:
     is something that has to be trusted; a fuller client would be more to trust.
     """
 
-    def __init__(self, command: list[str], cwd: str | None = None):
+    def __init__(self, command: list[str], cwd: str | None = None,
+                 env: dict[str, str] | None = None):
         self.command = list(command)
         self.cwd = cwd
+        self.env = env
         self._proc: subprocess.Popen | None = None
         self._next_id = 0
         self._buffer: dict[Any, dict] = {}
@@ -62,10 +64,10 @@ class MCPServer:
         # Resolve the program first: on Windows `npx` is `npx.cmd`, which Popen does not find
         # by its bare name.
         command = list(self.command)
-        if command and (found := shutil.which(command[0])):
+        if command and (found := shutil.which(command[0], path=(self.env or {}).get("PATH"))):
             command[0] = found
         self._proc = subprocess.Popen(
-            command, cwd=self.cwd,
+            command, cwd=self.cwd, env=self.env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.server_info = self.request("initialize", {

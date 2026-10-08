@@ -193,8 +193,12 @@ class Lab:
         return re.sub(pattern, lambda m: swap[m.group(0)], sample["text"])
 
     def save_tools(self, tools: list[dict[str, Any]]) -> None:
-        self._write("tools.json", [{"name": t["name"], "effect": tool_effect(t)[0],
-                                    "basis": tool_effect(t)[1]} for t in tools])
+        """Merged by name: several wrapped servers can share one lab."""
+        known = {t["name"]: t for t in self.tools()}
+        for t in tools:
+            effect, basis = tool_effect(t)
+            known[t["name"]] = {"name": t["name"], "effect": effect, "basis": basis}
+        self._write("tools.json", list(known.values()))
 
     def tools(self) -> list[dict[str, Any]]:
         return self._read("tools.json", [])
@@ -364,7 +368,7 @@ def preview(lab: Lab) -> dict[str, Any] | None:
 
 
 def finish(lab: Lab, claim: str, message: str | None = None,
-           checked: str | None = None) -> dict[str, Any]:
+           checked: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Close the open run with the person's answers and store the verdict.
 
     `claim`: what the agent told them. `checked`: their look at the result, needed only when
@@ -380,6 +384,7 @@ def finish(lab: Lab, claim: str, message: str | None = None,
         result["world"] = {"right": "checked_right", "wrong": "checked_wrong"}.get(
             checked or "", "unclear")
     result["verdict"], result["basis"] = verdict(result["world"], claim)
+    result.update(extra or {})
     lab._write(f"runs/{result['run']}.json", result)
     return result
 
@@ -467,15 +472,16 @@ class FaultProxy:
         if plan is None or plan["forward"]:
             result = self.real.call_tool(name, args)
             text, is_error = _text(result), bool(result.get("isError"))
-            applied = False
+            applied, real_text = False, None
             if plan and plan["transform"] and not is_error:
+                real_text = text  # kept for the reviewer; the agent only sees the damage
                 text, applied = transform(plan["transform"], text), True
                 result = {"content": [{"type": "text", "text": text}], "isError": False}
             if effect == "write" and not is_error:
                 with self.lab.lock():
                     self.lab.save_sample(name, text, args)
         else:
-            applied, is_error = True, plan["error"]
+            applied, is_error, real_text = True, plan["error"], None
             text = plan["text"]
             if text is None:  # phantom: a real success reply of this tool, if we have one
                 with self.lab.lock():
@@ -484,10 +490,12 @@ class FaultProxy:
 
         if plan is not None:
             with self.lab.lock():
-                self.lab.append(run["run"], {
-                    "event": "reply", "seq": seq, "at": _now(), "is_error": is_error,
-                    "fault_applied": applied or plan["fault_applied"],
-                    "text": text[:KEEP_CHARS]})
+                row = {"event": "reply", "seq": seq, "at": _now(), "is_error": is_error,
+                       "fault_applied": applied or plan["fault_applied"],
+                       "text": text[:KEEP_CHARS]}
+                if real_text is not None:
+                    row["real_text"] = real_text[:KEEP_CHARS]
+                self.lab.append(run["run"], row)
         return result
 
     def serve(self, stdin: TextIO, stdout: TextIO) -> None:

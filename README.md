@@ -21,18 +21,72 @@ car; it controls the wall.
 ## Install
 
 ```sh
-pip install ajantik
+pipx install ajantik
 ```
 
-Python 3.11+, macOS or Linux. The wall itself needs only the standard library and PyYAML,
+No pipx yet? macOS: `brew install pipx`; Linux: `sudo apt install pipx`; Windows:
+`py -m pip install --user pipx`. Then `pipx ensurepath` and open a new terminal. With uv:
+`uv tool install ajantik`. Inside a Python 3.11+ virtual environment, `pip install ajantik`
+works too.
+
+Python 3.11+, macOS, Linux or Windows. The wall itself needs only the standard library and PyYAML,
 so it starts cheaply anywhere. To work on Ajantik itself:
 `git clone https://github.com/Ajantik/ajantik && pip install -e '.[dev]'`.
 
-## Test your own skill on your own MCP server
+## Test your own skill, automatically
 
-You already have a skill and the connector it uses. Put Ajantik in front of that connector,
-under the same name and the same tools, and run the skill as you always do. Each run gets
-one fault; at the end you say what the agent told you, and Ajantik says what really happened.
+You have a Claude Code skill and the MCP connectors it uses. One command runs the skill once
+with no fault and once per fault it can trigger, each time behind a fault proxy, and has a
+separate model review what the agent told you:
+
+```sh
+ajantik test skills                                    # what can be tested here
+ajantik test run --skill notes --prompt "summarise my notes"
+```
+
+```
+Skill "notes", prompt: "summarise my notes"
+Connectors behind the fault proxy: notes
+Tools that change things: notes: write_file, notes: edit_file, ...
+Every call that is not faulted reaches your real server: those writes really happen, once
+per run. Use a test workspace if you have one.
+Run the test? [y/N]: y
+  run 1/6  No fault          CORRECT
+  run 2/6  Phantom success   SILENT WRONG
+  ...
+Report: ~/.ajantik/tests/auto-notes-.../report.html
+```
+
+**Or ask for it in the chat.** Add Ajantik to Claude Code as an MCP server once, then say
+"test my notes skill":
+
+```sh
+claude mcp add ajantik -- ajantik mcp
+```
+
+Claude shows you the plan, asks you to confirm, runs the test in the background and gives you
+the verdicts. The one question you answer is the confirmation: the skill runs several times
+and calls that are not faulted change real things. `--before "<command>"` resets a test
+workspace before every run.
+
+How it works:
+
+- **The agent** is Claude Code (`claude -p`) on your own login, with your skill and your
+  connectors, each started behind the proxy, in an empty working directory, with a spend cap
+  per run (`--budget`, default $0.50). Local (stdio) connectors only for now; remote ones are
+  listed and left out.
+- **The reviewer** is a different model (`--reviewer-model`, default Claude Haiku 4.5) with no
+  tools. It reads the agent's last message and answers "did it claim the task was done?", and
+  where the calls cannot show the outcome it compares what the agent wrote with the real data
+  it read. Every answer keeps its one-sentence reason in the report. Its agreement with
+  people has not been measured yet; the report says so.
+- **ChatGPT** cannot be run headless, so this mode is Claude Code only.
+
+## Test your own skill, one run at a time
+
+The same proxy, driven by hand, for agents Ajantik cannot start itself (Claude Desktop,
+Cursor). Each run gets one fault; at the end you say what the agent told you, and Ajantik
+says what really happened.
 
 **1. Wrap the server** your MCP client already starts. `setup` only prints the config:
 

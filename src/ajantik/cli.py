@@ -284,7 +284,8 @@ def test_setup(
         raise typer.BadParameter("No server command. Add `-- <your MCP server command>`, "
                                  "exactly as your MCP client starts it today.")
     exe = shutil.which("ajantik")
-    head = [str(Path(exe).resolve())] if exe else [sys.executable, "-m", "ajantik.cli"]
+    # Not resolved: pipx's ~/.local/bin/ajantik survives a reinstall, its target may not.
+    head = [str(Path(exe).absolute())] if exe else [sys.executable, "-m", "ajantik.cli"]
     full = [*head, "proxy", "--name", name, "--", *server]
     Lab(name).dir.mkdir(parents=True, exist_ok=True)
     entry = json.dumps({name: {"command": full[0], "args": full[1:]}}, indent=2)
@@ -382,6 +383,74 @@ def test_end(
                "next: ajantik test start")
 
 
+@test_app.command("skills")
+def test_skills(cwd: Path = typer.Option(Path("."), help="Project directory.")) -> None:
+    """The Claude Code skills Ajantik can test here."""
+    from ajantik.autotest import list_skills
+
+    skills = list_skills(cwd.resolve())
+    for sk in skills:
+        typer.echo(f"  {sk.name:<24} ({sk.scope})  {sk.description[:70]}")
+    if not skills:
+        typer.echo("No skills found in ~/.claude/skills or ./.claude/skills.")
+
+
+@test_app.command("run")
+def test_run(
+    skill: str | None = typer.Option(None, help="The skill to test (see `ajantik test skills`)."),
+    prompt: str | None = typer.Option(None, help="What you would type to use the skill."),
+    cwd: Path = typer.Option(Path("."), help="Project directory whose Claude Code config to use."),
+    yes: bool = typer.Option(False, "--yes", help="Do not ask before running."),
+    budget: float = typer.Option(0.5, help="Spend cap per run, in USD, on your Claude login."),
+    repeat: int = typer.Option(1, help="Runs per fault."),
+    before: str | None = typer.Option(None, help="Shell command to run before every run, e.g. "
+                                                 "to reset a test workspace."),
+    reviewer_model: str = typer.Option("claude-haiku-4-5", help="Model of the reviewer."),
+    plan_file: Path | None = typer.Option(None, hidden=True),
+    lab_name: str | None = typer.Option(None, hidden=True),
+) -> None:
+    """Test a skill automatically: run it once per fault and let a separate model review it."""
+    from ajantik import autotest as at
+    from ajantik.reviewer import ClaudeReviewer
+
+    if plan_file:
+        plan = at.Plan.from_json(json.loads(plan_file.read_text(encoding="utf-8")))
+    else:
+        if not skill or not prompt:
+            raise typer.BadParameter("Give --skill and --prompt (see `ajantik test skills`).")
+        try:
+            plan = at.make_plan(skill, prompt, cwd.resolve(), budget_usd=budget, repeat=repeat,
+                                reviewer_model=reviewer_model, before=before)
+        except ValueError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(2) from exc
+    typer.echo(at.describe(plan))
+    if not yes and not typer.confirm("\nRun the test?", default=False):
+        raise typer.Exit(1)
+    claude = at.find_claude()
+    if not claude:
+        typer.echo("Claude Code (`claude`) is not installed or not on PATH; it runs the skill.")
+        raise typer.Exit(2)
+    printed = 0
+
+    def show(status: dict) -> None:
+        nonlocal printed
+        for r in status["runs"][printed:]:
+            total = status.get("total")
+            label = f"run {r['run']}/{total}" if total else "control"
+            typer.echo(f"  {label:<9}  {at.family_name(r['fault']):<17} "
+                       f"{at.VERDICT_TEXT.get(r['verdict'], r['verdict'])}  ({r['seconds']}s)")
+        printed = len(status["runs"])
+
+    status = at.run_test(plan, at.claude_agent(claude),
+                         ClaudeReviewer(claude, at.run_env(), plan.reviewer_model),
+                         lab_name=lab_name, progress=show)
+    if status["state"] != "done":
+        typer.echo(f"\n{status.get('error', 'The test did not finish.')}")
+        raise typer.Exit(1)
+    typer.echo(f"\n{status['summary']}\nReport: {status['report']}")
+
+
 @test_app.command("discard")
 def test_discard(name: str | None = typer.Option(None, help="Server name (needed if several).")
                  ) -> None:
@@ -409,6 +478,14 @@ def test_results(name: str | None = typer.Option(None, help="Server name (needed
         shown = (f"silent wrong {cell['silent_wrong']}/{cell['n']}" if cell else "not seen yet")
         typer.echo(f"  {family_name(fault):<18} {shown}")
     typer.echo("Few runs per fault: read these as what happened, not as a rate.")
+
+
+@command("mcp")
+def mcp_cmd() -> None:
+    """Serve Ajantik as an MCP server, so you can say "test my skill" in Claude Code."""
+    from ajantik.mcp_server import serve
+
+    serve()
 
 
 # -- the lab's own harness and tools ------------------------------------------------
