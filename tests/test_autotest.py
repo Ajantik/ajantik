@@ -28,6 +28,7 @@ def project(tmp_path, monkeypatch):
     wrapped = ["proxy", "--name", "store", "--", *FAKE]
     (conf / ".claude.json").write_text(json.dumps({"projects": {str(cwd): {"mcpServers": {
         "store": {"type": "stdio", "command": "/x/ajantik", "args": wrapped, "env": {}},
+        "ajantik": {"type": "stdio", "command": "ajantik", "args": ["mcp"], "env": {}},
         "remote": {"type": "http", "url": "https://example.com/mcp"}}}}}))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(conf))
     monkeypatch.setenv("AJANTIK_HOME", str(tmp_path / "home"))
@@ -39,6 +40,15 @@ def test_discovery_finds_skills_and_unwraps_servers(project):
     servers, notes = at.discover_servers(project)
     assert servers["store"]["command"] == FAKE[0] and servers["store"]["args"] == FAKE[1:]
     assert "remote" not in servers and any("remote" in n for n in notes)
+    assert "ajantik" not in servers  # the test runner is never a connector under test
+
+
+def test_ajantik_is_recognised_however_it_is_started():
+    assert at.is_ajantik_itself({"command": "/Users/x/.local/bin/ajantik", "args": ["mcp"]})
+    assert at.is_ajantik_itself({"command": "python3", "args": ["-m", "ajantik.cli", "mcp"]})
+    assert at.is_ajantik_itself({"command": "python3", "args": ["-m", "ajantik.mcp_server"]})
+    assert not at.is_ajantik_itself({"command": "ajantik", "args": ["proxy", "--name", "n",
+                                                                    "--", "npx", "srv"]})
 
 
 def test_the_plan_lists_writing_tools_and_runs_nothing(project):

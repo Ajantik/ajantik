@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ajantik"
-version = "0.3.0"
+version = "0.3.1"
 description = "A crash test for AI agents: what does your agent tell you when its tools lie or fail?"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -115,6 +115,18 @@ def unwrap(server: dict[str, Any]) -> dict[str, Any]:
     return server
 
 
+def is_ajantik_itself(spec: dict[str, Any]) -> bool:
+    """`ajantik mcp` -- the server that runs the test. Wrapping it would let the agent under
+    test start tests of its own, and it is not the skill's connector anyway."""
+    cmd = Path(str(spec.get("command", ""))).name.lower()
+    args = [str(a) for a in spec.get("args") or []]
+    if "ajantik.mcp_server" in args:
+        return True
+    if cmd.startswith("ajantik") and args[:1] == ["mcp"]:
+        return True
+    return "ajantik.cli" in args and "mcp" in args[args.index("ajantik.cli") + 1:][:1]
+
+
 def discover_servers(cwd: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """The stdio MCP servers Claude Code would start in `cwd`: user, project-local and
     `.mcp.json` scopes, later ones winning. Returns (servers, notes about skipped ones)."""
@@ -133,6 +145,9 @@ def discover_servers(cwd: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
         for name, spec in scope.items():
             if spec.get("type", "stdio") != "stdio" or not spec.get("command"):
                 notes.append(f"{name}: a remote server ({spec.get('type')}); not tested yet")
+                servers.pop(name, None)
+                continue
+            if is_ajantik_itself(spec):
                 servers.pop(name, None)
                 continue
             servers[name] = unwrap(spec)
