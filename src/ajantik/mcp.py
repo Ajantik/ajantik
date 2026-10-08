@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 from typing import Any, Self
 
@@ -58,8 +59,13 @@ class MCPServer:
         self.server_info: dict[str, Any] = {}  # what initialize reported about the server
 
     def __enter__(self) -> Self:
+        # Resolve the program first: on Windows `npx` is `npx.cmd`, which Popen does not find
+        # by its bare name.
+        command = list(self.command)
+        if command and (found := shutil.which(command[0])):
+            command[0] = found
         self._proc = subprocess.Popen(
-            self.command, cwd=self.cwd,
+            command, cwd=self.cwd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.server_info = self.request("initialize", {
@@ -96,6 +102,15 @@ class MCPServer:
             e = reply["error"]
             raise MCPError(f"{method}: {e.get('code')} {e.get('message')}")
         return reply.get("result", {})
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        """Send a notification: no id, and no reply is awaited."""
+        if self._proc is None:
+            raise MCPError("server is not running")
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        self._send(msg)
 
     def close(self) -> None:
         if self._proc is None:

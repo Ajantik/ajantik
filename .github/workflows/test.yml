@@ -20,3 +20,16 @@ jobs:
       - run: ruff check src tests
       - run: pytest -q
       - run: ajantik demo --out /tmp/ajantik-demo
+
+  # Your-own-skill testing (`ajantik proxy`, `ajantik test`) is supported on Windows; this job
+  # is what that claim rests on. The rest of the lab is tested on Linux only.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q tests/test_proxy.py
+      - run: ajantik test setup --name smoke -- python -c "print()"

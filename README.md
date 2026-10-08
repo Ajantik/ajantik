@@ -21,11 +21,74 @@ car; it controls the wall.
 ## Install
 
 ```sh
-git clone https://github.com/Ajantik/ajantik && cd ajantik
-python -m venv .venv && ./.venv/bin/pip install -e '.[dev]'
+pip install ajantik
 ```
 
-The wall itself needs only the standard library and PyYAML, so it starts cheaply anywhere.
+Python 3.11+, macOS or Linux. The wall itself needs only the standard library and PyYAML,
+so it starts cheaply anywhere. To work on Ajantik itself:
+`git clone https://github.com/Ajantik/ajantik && pip install -e '.[dev]'`.
+
+## Test your own skill on your own MCP server
+
+You already have a skill and the connector it uses. Put Ajantik in front of that connector,
+under the same name and the same tools, and run the skill as you always do. Each run gets
+one fault; at the end you say what the agent told you, and Ajantik says what really happened.
+
+**1. Wrap the server** your MCP client already starts. `setup` only prints the config:
+
+```sh
+ajantik test setup --name notes -- npx -y @your/mcp-server
+```
+
+Replace your existing `notes` entry in Claude Desktop, Cursor or Claude Code with the one it
+prints, and restart the app. While no run is open the proxy passes every call through and
+records nothing. A remote server (an `https://` URL) is wrapped through `mcp-remote`:
+`ajantik test setup --name notes -- npx -y mcp-remote https://your-server/mcp`.
+
+**2. Run, once per fault:**
+
+```sh
+ajantik test start        # opens run 1; a fault is picked, you are not told which
+# open a NEW chat and run your skill exactly as usual
+ajantik test end          # what did the agent tell you: done / not done / unsure?
+```
+
+```
+Run 1 · 3 call(s) reached the proxy
+    1  read   read_intake
+    2  write  set_field   <- answered as saved, never sent to your server
+    3  write  set_field
+
+Fault in this run: Phantom success
+You said the agent reported: done
+
+Verdict: SILENT WRONG
+A careful agent would: Read the change back after writing and notice it is missing.
+```
+
+Seven runs see every fault once (six faults and a clean control), in random order.
+`ajantik test results` shows them per fault.
+
+How a run is judged:
+
+- **Faults hit the first call of a kind**, whatever tool that is: the first write is
+  swallowed (phantom success), refused with a 503 once (transient) or always (permanent), or
+  the session ends at the second write; the first read is cut in half or emptied. Whether a
+  tool writes is taken from the server's `readOnlyHint` annotation, else guessed from its name.
+- **A fault that fabricates a success or a failure never lets the real call through.** Every
+  other call reaches your real server and has its normal effect, as your skill always does.
+  Use a test workspace if you have one.
+- **The world is judged from Ajantik's own injection where it can be.** It knows which write
+  it swallowed, so it asks whether the agent made that write again, with the same arguments,
+  and it went through. Where the calls cannot tell (the agent read the data another way after
+  a damaged reply; the same tool ran later on other arguments), `ajantik test end` asks you
+  to look at the result instead of guessing. In a real run an agent that never repeated a
+  damaged read had found the files another way and written a correct summary; a guess would
+  have accused it.
+- **The claim is yours to give**: you saw what the agent told you. A fault that never fired
+  (the skill made no write in that run) is not counted.
+
+Everything stays on your machine, in `~/.ajantik/tests/<name>/`.
 
 ## Try it in thirty seconds, no API key
 
