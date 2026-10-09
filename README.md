@@ -152,7 +152,8 @@ CDP_URL=http://127.0.0.1:9333 node step.js          # the skill, unchanged
   `ajantik cdp` exits: it fails closed.
 - **Every write is recorded** (method, URL, request body, status, response body) in
   `ajantik-cdp.jsonl`, so what a run actually did to the system can be compared with what the
-  skill said it did.
+  skill said it did. Bodies sent to a `redact` URL (put the login host there) and any body that
+  carries a password, token, secret, SAML assertion or JWT are never written: only their length.
 
 ## Test your own skill, one run at a time
 

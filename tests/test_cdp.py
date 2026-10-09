@@ -42,6 +42,18 @@ def test_policy_records_writes_and_matching_reads():
     assert not p.records("GET", "https://x/api/bundle.js", "Script")
 
 
+def test_secrets_never_reach_the_log():
+    p = Policy.from_dict({"redact": ["idp\\.example"]})
+    assert p.body("https://idp.example/login", "user=a&x=1") == {"redacted": 10}
+    for secret in ("username=a&password=hunter2", '{"user": "a", "Password": "x"}',
+                   "j_password=x", "client_secret=abc", "SAMLResponse=PHN",
+                   '<input value="eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJlM2UxODg.sig">', '{"accessToken" : "x"}', "pwd=1"):
+        assert "redacted" in p.body("https://app.example/x", secret), secret
+    assert p.body("https://app.example/x", '{"name":"x"}') == {"body": '{"name":"x"}'}
+    # It errs on the safe side: a key that merely looks like a secret hides the body too.
+    assert "redacted" in p.body("https://app.example/x", '{"passageNo": 3}')
+
+
 def test_rewrite_points_devtools_addresses_here():
     text = '{"webSocketDebuggerUrl": "ws://127.0.0.1:9335/devtools/browser/abc"}'
     assert "ws://127.0.0.1:9333/devtools" in rewrite(text, "127.0.0.1:9335", "127.0.0.1:9333")

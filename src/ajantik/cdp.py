@@ -26,10 +26,13 @@ Ajantik is told about and give the skill this address, so there is no way around
     python -m ajantik.cdp --upstream http://127.0.0.1:9335 --port 9333 \\
         --config guard.json --log /tmp/cdp.jsonl
 
+Bodies sent to a `redact` URL (a login page), and any body with a password, token or secret
+field, are never written to the log: only their length is.
+
 Config (JSON, every key optional):
 
     {"deny": ["regex", ...], "allow_writes": ["regex", ...], "deny_clicks": ["regex", ...],
-     "record": ["regex", ...], "body_limit": 65536}
+     "record": ["regex", ...], "redact": ["regex", ...], "body_limit": 65536}
 
 The first line on stdout is `ajantik-cdp listening on http://HOST:PORT`.
 """
@@ -63,6 +66,10 @@ WORKER_TYPES = {"worker", "shared_worker", "service_worker"}
 WORLD = "ajantik_guard"                      # the isolated world the click guard lives in
 BINDING = "__ajantikBlocked"
 READY_TIMEOUT = 10.0
+# A form field or JSON key that carries a secret: such a body is never written to the log.
+SECRET = re.compile(r"""(^|[&"'{,\s])[\w.\-\[\]]*(pass(word|wd)?|pwd|secret|token|otp|credential|saml)"""
+                    r"""[\w.\-\[\]]*["']?\s*[=:]"""
+                    r"|eyJ[\w-]{8,}\.eyJ[\w-]{8,}\.", re.IGNORECASE)  # or a bare JWT
 
 
 def _now() -> str:
@@ -79,6 +86,7 @@ class Policy:
     allow_writes: list[re.Pattern[str]] | None = None
     deny_clicks: list[str] = field(default_factory=list)   # JavaScript regex sources
     record: list[re.Pattern[str]] = field(default_factory=list)
+    redact: list[re.Pattern[str]] = field(default_factory=list)
     body_limit: int = 65536
 
     @classmethod
@@ -88,6 +96,7 @@ class Policy:
                    allow_writes=_compile(allow) if allow is not None else None,
                    deny_clicks=list(d.get("deny_clicks", [])),
                    record=_compile(d.get("record", [])),
+                   redact=_compile(d.get("redact", [])),
                    body_limit=int(d.get("body_limit", 65536)))
 
     def blocks(self, method: str, url: str, resource_type: str | None = None,
@@ -113,9 +122,18 @@ class Policy:
             return True
         return resource_type in (None, "XHR", "Fetch") and any(p.search(url) for p in self.record)
 
+    def body(self, url: str, text: str | bytes | None) -> dict[str, Any]:
+        """A body for the log: never one sent to a `redact` URL, nor one carrying a password."""
+        if text is None:
+            return {}
+        if any(p.search(url) for p in self.redact) or SECRET.search(
+                text if isinstance(text, str) else text.decode("utf-8", "replace")):
+            return {"redacted": len(text)}
+        return _body(text, self.body_limit)
+
     def summary(self) -> str:
         parts = [f"{len(self.deny)} deny", f"{len(self.deny_clicks)} deny_clicks",
-                 f"{len(self.record)} record"]
+                 f"{len(self.record)} record", f"{len(self.redact)} redact"]
         if self.allow_writes is not None:
             parts.insert(1, f"{len(self.allow_writes)} allow_writes")
         return ", ".join(parts)
@@ -357,12 +375,12 @@ class Guard:
                 await self.send("Fetch.failRequest", {"requestId": p["requestId"],
                                                       "errorReason": "BlockedByClient"}, sid)
                 self.log.write("blocked", reason=reason, method=method, url=url, type=rtype,
-                               **_body(_post_data(req), self.policy.body_limit))
+                               **self.policy.body(url, _post_data(req)))
                 return
             if self.policy.records(method, url, rtype) and sid and p.get("networkId"):
                 self._open[(sid, p["networkId"])] = {
                     "method": method, "url": url, "type": rtype,
-                    "request": _body(_post_data(req), self.policy.body_limit)}
+                    "request": self.policy.body(url, _post_data(req))}
             await self.send("Fetch.continueRequest", {"requestId": p["requestId"]}, sid)
         except CDPError:
             pass  # the page or the request went away
@@ -379,7 +397,7 @@ class Guard:
         try:
             got = await self.send("Network.getResponseBody", {"requestId": p["requestId"]}, sid)
             body = base64.b64decode(got["body"]) if got.get("base64Encoded") else got["body"]
-            row["response"] = _body(body, self.policy.body_limit)
+            row["response"] = self.policy.body(row["url"], body)
         except CDPError:
             row["response"] = {}
         self.log.write("http", **row)
