@@ -43,15 +43,17 @@ def _config() -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def matched_script(args: list[str], patterns: list[str], cwd: Path) -> str | None:
+def matched_script(args: list[str], patterns: list[str], cwd: Path,
+                   root: Path | None = None) -> str | None:
     """The script a launcher call runs, if it is one we handle: the first argument that is
-    not a flag, as a path relative to cwd."""
+    not a flag, as a path relative to the project root (default: cwd). Relative to the root,
+    not to cwd, so `cd runner && node save.js` still matches `runner/*.js`."""
     script = next((a for a in args if not a.startswith("-")), None)
     if script is None:
         return None
-    p = Path(script)
-    rel = str(p.resolve().relative_to(cwd.resolve())) if p.is_absolute() and \
-        p.resolve().is_relative_to(cwd.resolve()) else script
+    base = (root or cwd).resolve()
+    full = (cwd / script).resolve()
+    rel = str(full.relative_to(base)) if full.is_relative_to(base) else script
     rel = rel.removeprefix("./")
     return rel if any(fnmatch.fnmatch(rel, pat) for pat in patterns) else None
 
@@ -60,7 +62,13 @@ def run(launcher: str, args: list[str]) -> int:
     cfg = _config()
     real = cfg["launchers"][launcher]
     cwd = Path.cwd()
-    script = matched_script(args, cfg.get("patterns", []), cwd)
+    root = Path(cfg["root"]) if cfg.get("root") else None
+    script = matched_script(args, cfg.get("patterns", []), cwd, root)
+    if script is None and cfg.get("mode") == "twin" and launcher in cfg.get("block", {}):
+        # Fail closed: in a twin run, an unknown call of this launcher must not reach the
+        # real system (a script the adapter does not know could drive a live session).
+        sys.stdout.write(cfg["block"][launcher].rstrip("\n") + "\n")
+        return 1
     if script is None or cfg.get("mode", "pass") == "pass":
         os.execv(real, [real, *args])  # not ours: the real program, as if we were not here
     if cfg["mode"] == "twin":
@@ -91,7 +99,7 @@ def run(launcher: str, args: list[str]) -> int:
 
 
 def install(shim_dir: Path, launchers: list[str], patterns: list[str], mode: str,
-            log: Path, path: str | None = None, **extra: str) -> Path:
+            log: Path, path: str | None = None, **extra: Any) -> Path:
     """Write the launchers and the config. Returns the config path; put shim_dir first on the
     agent's PATH and AJANTIK_SHIM=<config> in its environment."""
     shim_dir.mkdir(parents=True, exist_ok=True)

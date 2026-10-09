@@ -18,6 +18,9 @@ def test_only_configured_scripts_are_ours(tmp_path):
         "tools/scan.py"
     assert matched_script(["-c", "print(1)"], ["tools/*.py"], PILOT) is None
     assert matched_script(["other.py"], ["tools/*.py"], PILOT) is None
+    # from a subfolder, matched against the project root, not the cwd
+    assert matched_script(["scan.py"], ["tools/*.py"], PILOT / "tools", root=PILOT) == \
+        "tools/scan.py"
 
 
 def test_record_mode_logs_the_call_and_changes_nothing(tmp_path):

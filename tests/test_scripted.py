@@ -184,3 +184,83 @@ def test_resume_continues_the_same_session_with_the_operator_message():
     assert scripted.claude_resume(agent, "s1", "go on") == [
         "claude", "-p", "go on", "--resume", "s1", "--allowedTools", "X", "--output-format",
         "json"]
+
+
+TINY_ADAPTER = '''
+def initial_state(project): return {"n": 0}
+def effect(script, args): return "write" if script == "x/w.py" else "read"
+def simulate(state, script, args):
+    if script == "x/w.py":
+        state["n"] += 1
+        return {"SONUC": "TAMAM", "n": state["n"]}
+    if script == "x/fail.py":
+        return {"DUR": "KabulHatasi", "__exit": 1}
+    if script == "x/crash.py":
+        return {"__stdout": "YasakIhlali: OTURUM DUSTU\\n    at baglan (ortak.js:93)\\n",
+                "__exit": 1}
+    return {"n": state["n"]}
+def success_reply(state, script, args): return {"SONUC": "TAMAM"}
+def failure_reply(script, args): return {"DUR": "KabulHatasi", "__exit": 1}
+def session_reply(): return {"__stdout": "YasakIhlali: OTURUM DUSTU\\n", "__exit": 1}
+def store_empty(state, script, args): return None
+def switch_context(state): pass
+def world(state, project): return {"u": []}
+def claims(message): return {"u": "done"}
+BLOCK = {"python3": '{"DUR": "twin: unknown script"}'}
+'''
+
+
+@pytest.fixture
+def tiny(tmp_path):
+    (tmp_path / "adapter.py").write_text(TINY_ADAPTER)
+    tw = tmp_path / "twin.json"
+    adapter = scripted.load_adapter(tmp_path / "adapter.py")
+    scripted.new_twin(tw, adapter, tmp_path, "clean")
+    config = install(tmp_path / "shim", ["python3"], ["x/*.py"], "twin", tmp_path / "c.jsonl",
+                     twin=str(tw), adapter=str(tmp_path / "adapter.py"), root=str(tmp_path),
+                     block=adapter.BLOCK)
+    env = {"PATH": f"{tmp_path / 'shim'}{os.pathsep}{os.environ['PATH']}",
+           "AJANTIK_SHIM": str(config)}
+
+    def sh(cmd):
+        return subprocess.run(["/bin/sh", "-c", cmd], cwd=tmp_path, env=env,
+                              capture_output=True, text=True, check=False)
+    return sh
+
+
+def test_exit_codes_and_raw_output_reach_the_caller(tiny):
+    ok = tiny("python3 x/w.py")
+    assert ok.returncode == 0 and json.loads(ok.stdout)["n"] == 1
+    bad = tiny("python3 x/fail.py")
+    assert bad.returncode == 1 and json.loads(bad.stdout) == {"DUR": "KabulHatasi"}
+    crash = tiny("python3 x/crash.py")
+    assert crash.returncode == 1 and crash.stdout.startswith("YasakIhlali: OTURUM DUSTU")
+
+
+def test_an_unknown_call_of_a_blocked_launcher_never_runs_for_real(tiny, tmp_path):
+    marker = tmp_path / "ran"
+    blocked = tiny(f"python3 -c \"open('{marker}', 'w').write('x')\"")
+    assert blocked.returncode == 1 and "unknown script" in blocked.stdout
+    assert not marker.exists()
+
+
+def test_a_run_that_writes_into_the_original_project_is_reported(tmp_path):
+    """The safety net: whatever the agent does, a change to the original shows in the result."""
+    import sys
+
+    project = tmp_path / "proj"
+    (project / "x").mkdir(parents=True)
+    (project / "adapter.py").write_text(TINY_ADAPTER + '''
+def prepare_copy(copy, original):
+    (copy / "prepared").write_text("yes")
+def untouched(original):
+    return sorted(p.name for p in original.iterdir())
+''')
+    (project / "agent.py").write_text(
+        "import json, pathlib, sys\n"
+        f"pathlib.Path({str(project)!r}, 'leaked').write_text('x')\n"
+        "print(json.dumps({'type': 'result', 'result': 'u: done', 'num_turns': 1}))\n")
+    r = scripted.run_one(project, project / "adapter.py", [sys.executable, "agent.py"],
+                         tmp_path / "box", "clean", env={"PATH": os.environ["PATH"]})
+    assert (tmp_path / "box" / "project" / "prepared").exists()
+    assert r["outside"] and "leaked" in r["outside"][0]
