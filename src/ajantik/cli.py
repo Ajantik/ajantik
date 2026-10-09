@@ -268,6 +268,43 @@ def proxy_cmd(
     serve(name, server)
 
 
+@command("cdp")
+def cdp_cmd(
+    upstream: str = typer.Option("http://127.0.0.1:9335", help="Chrome's DevTools address. "
+                                 "Start Chrome with --remote-debugging-port on a port only "
+                                 "Ajantik is told about."),
+    port: int = typer.Option(9333, help="Where the skill connects (its CDP_URL)."),
+    config: Path | None = typer.Option(None, help="Guard config (JSON): deny, allow_writes, "
+                                       "deny_clicks, record, body_limit."),
+    log: Path = typer.Option(Path("ajantik-cdp.jsonl"), help="Where blocks and records go."),
+    deny: list[str] = typer.Option([], help="URL regex: writes and page loads blocked."),
+    allow_write: list[str] = typer.Option([], help="URL regex: the only places pages may write."),
+    deny_click: list[str] = typer.Option([], help="Label regex: clicks on it are swallowed."),
+    record: list[str] = typer.Option([], help="URL regex: reads recorded too (writes always are)."),
+) -> None:
+    """Guard a real browser for a skill that drives it over CDP: block submissions, record writes."""
+    import asyncio
+
+    from ajantik import cdp
+
+    policy = cdp.load_policy(config, deny=deny, allow_writes=allow_write,
+                             deny_clicks=deny_click, record=record)
+    if not (policy.deny or policy.deny_clicks or policy.allow_writes is not None):
+        typer.echo("Warning: nothing is blocked (no deny, allow_writes or deny_clicks); "
+                   "the guard only records.", err=True)
+    typer.echo(f"Guarding {upstream}: {policy.summary()}. Log: {log}", err=True)
+    try:
+        code = asyncio.run(cdp.run(upstream, "127.0.0.1", port, policy, cdp.Log(log)))
+    except KeyboardInterrupt:
+        code = 0
+    except OSError as e:
+        typer.echo(f"Chrome is not reachable at {upstream}: {e}", err=True)
+        raise typer.Exit(2) from e
+    if code:
+        typer.echo("The guard lost Chrome; the skill's connections were closed.", err=True)
+    raise typer.Exit(code)
+
+
 @test_app.command("setup", context_settings=PASSTHROUGH)
 def test_setup(
     ctx: typer.Context,

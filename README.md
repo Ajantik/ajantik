@@ -119,6 +119,41 @@ ajantik test twin --adapter path/to/ajantik_adapter.py --branch
   session continues (`--operator 2`, default). So "does the skill resume correctly after the
   operator steps in?" is tested too.
 
+## Skills that drive a real browser: guard it
+
+Some skills drive a live portal through Playwright over the DevTools protocol
+(`chromium.connectOverCDP(CDP_URL)`), in a Chrome where a person has logged in. Before such a
+skill is tested on the real system, the irreversible step has to be impossible, not merely
+forbidden in the instructions. `ajantik cdp` stands between the skill and that Chrome:
+
+```sh
+# Chrome on a port only Ajantik is told about (Chrome 136+ needs its own profile for this)
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/.portal-profile" --remote-debugging-port=9335
+ajantik cdp --upstream http://127.0.0.1:9335 --port 9333 --config guard.json
+CDP_URL=http://127.0.0.1:9333 node step.js          # the skill, unchanged
+```
+
+```json
+{"deny": ["submission"], "deny_clicks": ["proceed to submission"],
+ "allow_writes": ["^https://app\\.example\\.com/"], "record": ["/api/"]}
+```
+
+- **Ajantik keeps its own DevTools session on every tab, frame and worker**, old and new. A write
+  to a denied URL (or, with `allow_writes`, to anywhere else) and a page load of a denied URL fail
+  with `net::ERR_BLOCKED_BY_CLIENT`. A click, Enter or form submit on a control whose label
+  matches `deny_clicks` is swallowed before the page sees it. Every block goes to the log.
+- **The guard is in the browser, not in the skill's connection**, so it also holds for whatever
+  else drives that Chrome: a script on Chrome's own port, a browser extension such as Claude in
+  Chrome, a person. (`allow_writes` applies to pages; an extension's own background is held to
+  `deny` only, so it can still talk to its server.)
+- **The skill's connection passes through**, and nothing it sends reaches a tab before the guard
+  is in place there. If the guard loses Chrome, the skill's connections are closed and
+  `ajantik cdp` exits: it fails closed.
+- **Every write is recorded** (method, URL, request body, status, response body) in
+  `ajantik-cdp.jsonl`, so what a run actually did to the system can be compared with what the
+  skill said it did.
+
 ## Test your own skill, one run at a time
 
 The same proxy, driven by hand, for agents Ajantik cannot start itself (Claude Desktop,
