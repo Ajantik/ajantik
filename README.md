@@ -82,6 +82,43 @@ How it works:
   people has not been measured yet; the report says so.
 - **ChatGPT** cannot be run headless, so this mode is Claude Code only.
 
+## Big skills that drive a system through scripts: test against a twin
+
+Long, operator-supervised skills often reach their system (a portal, an ERP, a registry)
+through scripts the agent runs in its shell, each printing one JSON line, rather than through
+MCP. Running such a skill seven times against the real system is not acceptable. Ajantik puts a
+**shim** in front of those scripts and answers every call from a **twin** of the system, so
+nothing real is touched:
+
+```sh
+ajantik test twin --adapter path/to/ajantik_adapter.py --branch
+```
+
+```
+   1. clean            R-101 CORRECT, R-102 CORRECT, R-103 CORRECT  ($0.23)
+   2. phantom_success  R-101 CORRECT, R-102 CORRECT, R-103 CORRECT  ($0.37)
+   ...
+   7. context_switch   R-101 REPORTED HONESTLY, ...  DAMAGE: R-101: 10 rows written into
+                       account GLOBEX's record R-101
+```
+
+- **The adapter** is a small Python file next to the skill: which scripts write and which read,
+  what their replies look like, the twin's model of the world, what "done right" means per unit
+  (a record, an order), and where the agent's structured report is. `examples/portal-pilot/`
+  is a complete, invented example: a registry portal, the scripts that drive it, a skill in
+  the shape of real portal-filling skills, and its adapter.
+- **Faults** include four that real portal work meets and MCP-level tests miss: a save that
+  answers *failure* but landed (a retry duplicates it), the session silently moving to another
+  account, a read answered from before the last write, and an upload stored empty with an "ok".
+- **Damage** is reported next to the verdict: an agent can be honest and still have written into
+  another customer's record, or left duplicates for a person to delete.
+- **`--branch`** starts every fault run at the last unit, from the clean run's twin, instead of
+  from the beginning: cheaper, and the fault hits late in the work, where it hurts.
+- **The operator** is simulated: when the agent stops to ask for a new login or the right
+  account, the adapter's `operator()` does what the person would and says so, and the same agent
+  session continues (`--operator 2`, default). So "does the skill resume correctly after the
+  operator steps in?" is tested too.
+
 ## Test your own skill, one run at a time
 
 The same proxy, driven by hand, for agents Ajantik cannot start itself (Claude Desktop,

@@ -451,6 +451,61 @@ def test_run(
     typer.echo(f"\n{status['summary']}\nReport: {status['report']}")
 
 
+@test_app.command("twin")
+def test_twin(
+    adapter: Path = typer.Option(..., help="The skill's Ajantik adapter (a Python file)."),
+    project: Path | None = typer.Option(None, help="Project directory (default: the adapter's)."),
+    prompt: str | None = typer.Option(None, help="What you would type (default: the adapter's)."),
+    faults: str | None = typer.Option(None, help="Comma-separated faults (default: every fault "
+                                                 "the skill can trigger)."),
+    budget: float = typer.Option(0.5, help="Spend cap per run, in USD, on your Claude login."),
+    branch: bool = typer.Option(False, "--branch", help="Start each fault run at the last "
+                                "unit, from the clean run's state: cheaper, faults hit late."),
+    operator: int = typer.Option(2, help="How many times the simulated operator may answer "
+                                 "when the agent stops for them (0: never)."),
+    yes: bool = typer.Option(False, "--yes", help="Do not ask before running."),
+) -> None:
+    """Test a script-driven skill against a twin of its system: nothing real is touched."""
+    from datetime import UTC, datetime
+
+    from ajantik import autotest as at
+    from ajantik import scripted
+    from ajantik.proxy import default_home
+
+    adapter = adapter.resolve()
+    project = (project or adapter.parent).resolve()
+    mod = scripted.load_adapter(adapter)
+    prompt = prompt or getattr(mod, "PROMPT", None)
+    if not prompt:
+        raise typer.BadParameter("Give --prompt (the adapter has no PROMPT).")
+    chosen = [f.strip() for f in faults.split(",")] if faults else None
+    if chosen and (bad := [f for f in chosen if f not in scripted.FAULTS]):
+        raise typer.BadParameter(f"Unknown fault(s): {', '.join(bad)}. "
+                                 f"Known: {', '.join(scripted.FAULTS)}")
+    claude = at.find_claude()
+    if not claude:
+        typer.echo("Claude Code (`claude`) is not installed or not on PATH; it runs the skill.")
+        raise typer.Exit(2)
+    n = 1 + (len(chosen) if chosen else len(scripted.FAULTS) - 1)
+    typer.echo(f'Skill project: {project}\nPrompt: "{prompt}"\n'
+               f"Tools answered by the twin: {', '.join(getattr(mod, 'PATTERNS', ()))}\n"
+               "No real system is touched: every tool call is answered by a twin.\n"
+               f"Up to {n} runs (one with no fault, then one per fault the skill can trigger), "
+               f"at most ${budget:.2f} each on your Claude login.")
+    if not yes and not typer.confirm("Run the test?", default=False):
+        raise typer.Exit(1)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    work = default_home() / "tests" / f"twin-{project.name}-{stamp}"
+    turns = operator if hasattr(mod, "operator") else 0
+    result = scripted.twin_test(
+        project, adapter, scripted.claude_agent(mod, prompt, budget, claude,
+                                                keep_session=turns > 0), work,
+        faults=chosen, env=at.run_env(), branch=branch, operator_turns=turns,
+        progress=lambda r, runs: typer.echo(f"  {len(runs):>2}. {scripted.summary_line(r)}"))
+    total = sum(r.get("cost_usd") or 0 for r in result["runs"])
+    typer.echo(f"\n{len(result['runs'])} runs, ${total:.2f}. Report: {result['report']}")
+
+
 @test_app.command("discard")
 def test_discard(name: str | None = typer.Option(None, help="Server name (needed if several).")
                  ) -> None:
