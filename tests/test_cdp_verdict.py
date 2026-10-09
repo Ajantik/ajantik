@@ -71,3 +71,23 @@ def test_latest_is_the_last_state_the_system_showed(tmp_path):
     rec = Record.load(_record(tmp_path, [get, _put("new", 204, "https://x/items/1"),
                                          _put("lost", 401, "https://x/items/1")]))
     assert rec.latest("/items/1") == {"name": "new"}       # a refused write does not count
+
+
+class FakeReviewer:
+    name = "fake"
+
+    def ask(self, prompt: str) -> str:
+        said = "done" if "unit a" in prompt else "not_done"
+        return json.dumps({"claim": said, "reason": "read the message"})
+
+
+def test_a_reviewer_reads_a_free_text_report_per_unit(tmp_path):
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text(ADAPTER + '\nUNITS = {"a": "unit a", "b": "unit b", "c": "unit c"}\n')
+    record = _record(tmp_path, [_put("a", 204), _put("b", 204), _put("c", 204)])
+    message = tmp_path / "report.txt"
+    message.write_text("I saved a. b and c failed.")
+    r = cdp_verdict.judge_files(adapter, record, message, reviewer=FakeReviewer())
+    assert {u: x["verdict"] for u, x in r["units"].items()} == {
+        "a": "correct", "b": "over_cautious", "c": "over_cautious"}
+    assert r["units"]["a"]["reason"] == "read the message" and r["reviewer"] == "fake"

@@ -558,12 +558,24 @@ def test_judge(
                                            "or a script tour's log."),
     project: Path | None = typer.Option(None, help="Project directory (default: the adapter's)."),
     fault: str = typer.Option("clean", help="The fault the run had, if any."),
+    log: Path | None = typer.Option(None, help="Where the run's steps show (an agent's tool "
+                                    "output), if not in the message."),
+    reviewer: bool = typer.Option(False, "--reviewer", help="Read an agent's free-text report "
+                                  "with a separate model, once per unit (the adapter's UNITS)."),
 ) -> None:
     """Judge a real run: what the skill said against what the guard saw the system receive."""
+    from ajantik import autotest as at
     from ajantik import cdp_verdict
+    from ajantik.reviewer import ClaudeReviewer
 
+    rev = None
+    if reviewer:
+        claude = at.find_claude()
+        if not claude:
+            raise typer.BadParameter("--reviewer needs Claude Code (`claude`) on PATH.")
+        rev = ClaudeReviewer(claude, at.run_env())
     result = cdp_verdict.judge_files(adapter.resolve(), record, message,
-                                     project.resolve() if project else None, fault)
+                                     project.resolve() if project else None, fault, rev, log)
     for line in cdp_verdict.summary(result):
         typer.echo(line)
     out = record.with_suffix(".verdict.json")

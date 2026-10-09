@@ -37,7 +37,8 @@ field, are never written to the log: only their length is.
 Config (JSON, every key optional):
 
     {"deny": ["regex", ...], "allow_writes": ["regex", ...], "deny_clicks": ["regex", ...],
-     "record": ["regex", ...], "redact": ["regex", ...], "body_limit": 65536}
+     "record": ["regex", ...], "redact": ["regex", ...], "deny_methods": ["DELETE"],
+     "body_limit": 65536}
 
 The first line on stdout is `ajantik-cdp listening on http://HOST:PORT`.
 """
@@ -143,6 +144,7 @@ class Fault:
 class Policy:
     deny: list[re.Pattern[str]] = field(default_factory=list)
     allow_writes: list[re.Pattern[str]] | None = None
+    deny_methods: set[str] = field(default_factory=set)
     deny_clicks: list[str] = field(default_factory=list)   # JavaScript regex sources
     record: list[re.Pattern[str]] = field(default_factory=list)
     redact: list[re.Pattern[str]] = field(default_factory=list)
@@ -154,6 +156,7 @@ class Policy:
         allow = d.get("allow_writes")
         return cls(deny=_compile(d.get("deny", [])),
                    allow_writes=_compile(allow) if allow is not None else None,
+                   deny_methods={m.upper() for m in d.get("deny_methods", [])},
                    deny_clicks=list(d.get("deny_clicks", [])),
                    record=_compile(d.get("record", [])),
                    redact=_compile(d.get("redact", [])),
@@ -170,6 +173,8 @@ class Policy:
         if method.upper() not in SAFE_METHODS:
             if denied:
                 return "write to a denied URL"
+            if method.upper() in self.deny_methods:
+                return f"{method.upper()} is denied"
             if (from_page and self.allow_writes is not None
                     and not any(p.search(url) for p in self.allow_writes)):
                 return "write outside allow_writes"

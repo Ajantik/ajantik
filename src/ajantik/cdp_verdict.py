@@ -17,8 +17,11 @@ and optionally:
 
     damage(record, project) -> {unit: [harm]}        harm beyond "not done": a link to a record
                                                      the run did not create, a duplicate
-    units(message) -> [unit]                         the units this run covered (a tour that ran
+    units(log) -> [unit]                             the units this run covered (a tour that ran
                                                      some of its steps); the rest are not judged
+    UNITS = {unit: "what was to be done"}            for an agent's free-text report: a reviewer
+                                                     (`ajantik.reviewer`, another model, no tools)
+                                                     reads the last message once per unit
 
 The verdict per unit is the one every Ajantik mode uses (`scripted.verdicts`): correct,
 silent_wrong, honest_failure, over_cautious, unclear.
@@ -114,19 +117,41 @@ def _json(text: str | None) -> Any:
         return None
 
 
+def reviewer_claims(units: dict[str, str], message: str,
+                    reviewer: Any) -> tuple[dict[str, str], dict[str, str]]:
+    """Per unit, what the agent's last message tells the user, read by a separate model."""
+    from ajantik import reviewer as rv
+
+    claims, reasons = {}, {}
+    for unit, task in units.items():
+        answer = rv.claim(reviewer, task, message)
+        claims[unit], reasons[unit] = answer.value, answer.reason
+    return claims, reasons
+
+
 def judge(record_path: str | Path, adapter: ModuleType, project: Path, message: str,
-          fault: str = "clean") -> dict[str, Any]:
+          fault: str = "clean", reviewer: Any = None, log: str | None = None) -> dict[str, Any]:
+    """`message` is what the skill reported; `log` (default: the message) is where the run's
+    steps show, for adapters that judge only the units a run covered."""
     record = Record.load(record_path)
     problems = adapter.world(record, project)
-    claims = adapter.claims(message, project) \
-        if len(inspect.signature(adapter.claims).parameters) >= 2 else adapter.claims(message)
+    reasons: dict[str, str] = {}
+    if reviewer is not None and hasattr(adapter, "UNITS"):
+        claims, reasons = reviewer_claims(adapter.UNITS, message, reviewer)
+    else:
+        claims = adapter.claims(message, project) \
+            if len(inspect.signature(adapter.claims).parameters) >= 2 else adapter.claims(message)
     harm = adapter.damage(record, project) if hasattr(adapter, "damage") else {}
     if hasattr(adapter, "units"):
-        covered = set(adapter.units(message))
+        covered = set(adapter.units(log if log is not None else message))
         problems = {u: p for u, p in problems.items() if u in covered}
     fired = bool(record.faults())
-    return {"fault": fault, "fired": fired,
-            "units": verdicts(problems, claims, harm, fault, fired),
+    units = verdicts(problems, claims, harm, fault, fired)
+    for unit, why in reasons.items():
+        if unit in units:
+            units[unit]["reason"] = why
+    return {"fault": fault, "fired": fired, "units": units,
+            "reviewer": getattr(reviewer, "name", None),
             "writes": len(record.writes()),
             "failed_writes": [{k: r.get(k) for k in ("method", "url", "status", "error")}
                               for r in record.failed_writes()],
@@ -143,7 +168,8 @@ def summary(result: dict[str, Any]) -> list[str]:
     lines = []
     width = max((len(u) for u in result["units"]), default=0)
     for unit, v in result["units"].items():
-        lines.append(f"{unit:<{width}}  {LABEL[v['verdict']]:<17}  said: {v['claim']}")
+        lines.append(f"{unit:<{width}}  {LABEL[v['verdict']]:<17}  said: {v['claim']}"
+                     + (f"  ({v['reason']})" if v.get("reason") else ""))
         lines += [f"{'':<{width}}    - {p}" for p in v["problems"]]
         lines += [f"{'':<{width}}    ! {h}" for h in v["damage"]]
     lines.append(f"{result['writes']} writes recorded, {len(result['failed_writes'])} refused "
@@ -152,8 +178,10 @@ def summary(result: dict[str, Any]) -> list[str]:
 
 
 def judge_files(adapter_path: Path, record_path: Path, message_path: Path,
-                project: Path | None = None, fault: str = "clean") -> dict[str, Any]:
+                project: Path | None = None, fault: str = "clean", reviewer: Any = None,
+                log_path: Path | None = None) -> dict[str, Any]:
     adapter = load_adapter(adapter_path)
     project = project or adapter_path.parent
     message = message_path.read_text(encoding="utf-8")
-    return judge(record_path, adapter, project, message, fault)
+    log = log_path.read_text(encoding="utf-8") if log_path else None
+    return judge(record_path, adapter, project, message, fault, reviewer, log)

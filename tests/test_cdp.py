@@ -32,6 +32,9 @@ def test_policy_blocks_writes_and_page_loads_not_reads():
     assert p.blocks("GET", "https://other.example/x", "Document") is None
     assert p.blocks("POST", "https://api.vendor.example/x", from_page=False) is None
     assert p.blocks("POST", "https://app.example/submit/1", from_page=False)
+    q = Policy.from_dict({"deny_methods": ["delete"]})
+    assert q.blocks("DELETE", "https://app.example/doc/1") == "DELETE is denied"
+    assert q.blocks("PUT", "https://app.example/doc/1") is None
 
 
 def test_policy_records_writes_and_matching_reads():
