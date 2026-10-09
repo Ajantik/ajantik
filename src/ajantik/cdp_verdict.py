@@ -7,8 +7,10 @@ a field written to the wrong document shows in the body. The skill's report is t
 
 A small, skill-specific adapter (a Python file) reads both:
 
-    world(record, project) -> {unit: [problems]}      what the system received, per unit
-                                                     (a record, a document, a step's output)
+    world(record, project[, log]) -> {unit: [problems]}
+                                                     what the system received, per unit (a
+                                                     record, a document, a step's output); with
+                                                     `log`, against values the run printed too
     claims(message, project) -> {unit: "done"|"not_done"|"unsure"}
                                                      the report: the agent's last message, or
                                                      a script tour's log
@@ -134,7 +136,11 @@ def judge(record_path: str | Path, adapter: ModuleType, project: Path, message: 
     """`message` is what the skill reported; `log` (default: the message) is where the run's
     steps show, for adapters that judge only the units a run covered."""
     record = Record.load(record_path)
-    problems = adapter.world(record, project)
+    seen = log if log is not None else message
+    # world(record, project, log): a value the run printed (an id it generated) can be held
+    # against what the system ended up with
+    problems = adapter.world(record, project, seen) \
+        if len(inspect.signature(adapter.world).parameters) >= 3 else adapter.world(record, project)
     reasons: dict[str, str] = {}
     if reviewer is not None and hasattr(adapter, "UNITS"):
         claims, reasons = reviewer_claims(adapter.UNITS, message, reviewer)
@@ -143,7 +149,7 @@ def judge(record_path: str | Path, adapter: ModuleType, project: Path, message: 
             if len(inspect.signature(adapter.claims).parameters) >= 2 else adapter.claims(message)
     harm = adapter.damage(record, project) if hasattr(adapter, "damage") else {}
     if hasattr(adapter, "units"):
-        covered = set(adapter.units(log if log is not None else message))
+        covered = set(adapter.units(seen))
         problems = {u: p for u, p in problems.items() if u in covered}
     fired = bool(record.faults())
     units = verdicts(problems, claims, harm, fault, fired)
