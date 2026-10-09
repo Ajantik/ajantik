@@ -543,6 +543,27 @@ def test_twin(
     typer.echo(f"\n{len(result['runs'])} runs, ${total:.2f}. Report: {result['report']}")
 
 
+@test_app.command("judge")
+def test_judge(
+    adapter: Path = typer.Option(..., help="The skill's adapter (world + claims, a Python file)."),
+    record: Path = typer.Option(..., help="The guard's record (`ajantik cdp --log`)."),
+    message: Path = typer.Option(..., help="What the skill reported: the agent's last message, "
+                                           "or a script tour's log."),
+    project: Path | None = typer.Option(None, help="Project directory (default: the adapter's)."),
+    fault: str = typer.Option("clean", help="The fault the run had, if any."),
+) -> None:
+    """Judge a real run: what the skill said against what the guard saw the system receive."""
+    from ajantik import cdp_verdict
+
+    result = cdp_verdict.judge_files(adapter.resolve(), record, message,
+                                     project.resolve() if project else None, fault)
+    for line in cdp_verdict.summary(result):
+        typer.echo(line)
+    out = record.with_suffix(".verdict.json")
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    typer.echo(f"Verdict: {out}")
+
+
 @test_app.command("discard")
 def test_discard(name: str | None = typer.Option(None, help="Server name (needed if several).")
                  ) -> None:
