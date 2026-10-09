@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from websockets.sync.client import connect
 
-from ajantik.cdp import READY_PREFIX, Policy, rewrite
+from ajantik.cdp import READY_PREFIX, Fault, Policy, rewrite
 
 # -- the policy, without a browser -------------------------------------------------------------
 
@@ -52,6 +52,21 @@ def test_secrets_never_reach_the_log():
     assert p.body("https://app.example/x", '{"name":"x"}') == {"body": '{"name":"x"}'}
     # It errs on the safe side: a key that merely looks like a secret hides the body too.
     assert "redacted" in p.body("https://app.example/x", '{"passageNo": 3}')
+
+
+def test_fault_hits_the_nth_matching_write_only():
+    f = Fault.parse("transient_error:/api/doc:2")
+    hits = [f.hit(m, u) for m, u in [("PUT", "https://x/api/doc"), ("GET", "https://x/api/doc"),
+                                     ("PUT", "https://x/other"), ("PUT", "https://x/api/doc"),
+                                     ("PUT", "https://x/api/doc")]]
+    assert hits == [False, False, False, True, False]
+
+
+def test_session_drop_holds_from_its_write_on():
+    f = Fault.parse("session_drop:/api/")
+    hits = [f.hit(m, u) for m, u in [("GET", "https://x/api/a"), ("PUT", "https://x/api/doc"),
+                                     ("GET", "https://x/api/a"), ("GET", "https://x/style.css")]]
+    assert hits == [False, True, True, False]
 
 
 def test_rewrite_points_devtools_addresses_here():
@@ -200,12 +215,12 @@ def browser(tmp_path: Path):
     proc.wait()
 
 
-def _start_guard(upstream: str, tmp_path: Path, policy: dict[str, Any]):
+def _start_guard(upstream: str, tmp_path: Path, policy: dict[str, Any], *extra: str):
     config = tmp_path / "guard.json"
     config.write_text(json.dumps(policy))
     log = tmp_path / "cdp.jsonl"
     proc = subprocess.Popen([sys.executable, "-m", "ajantik.cdp", "--upstream", upstream,
-                             "--port", "0", "--config", str(config), "--log", str(log)],
+                             "--port", "0", "--config", str(config), "--log", str(log), *extra],
                             stdout=subprocess.PIPE, text=True)
     line = proc.stdout.readline()
     assert line.startswith(READY_PREFIX), line
@@ -287,3 +302,36 @@ def test_proxy_fails_closed_when_the_browser_goes(browser, tmp_path):
     chrome.kill()
     assert guard.wait(timeout=15) == 1
     assert _rows(log, "guard_lost")
+
+
+SAVE = ("fetch('/api/doc', {method: 'PUT', body: JSON.stringify({n: %d})})"
+        ".then(r => r.status, e => 'failed')")
+
+
+@needs_chrome
+@pytest.mark.parametrize(("fault", "seen", "received"), [
+    ("transient_error", [503, 200], [1]),        # the first save never arrives
+    ("phantom_success", [204, 200], [1]),        # "saved", and nothing arrived
+    ("phantom_failure", [500, 200], [0, 1]),     # it arrived, and the page was told it failed
+    ("session_drop", [401, 401], []),            # logged out from the first save on
+])
+def test_faults_on_a_real_browser(browser, tmp_path, fault, seen, received):
+    _chrome, upstream = browser
+    site = Site()
+    guard, here, log = _start_guard(upstream, tmp_path, POLICY, "--fault", f"{fault}:/api/doc")
+    try:
+        skill = Client(_ws_url(here))
+        sid = skill.open_tab(site.url + "/app")
+        got = [skill.eval(sid, SAVE % n) for n in range(2)]
+        time.sleep(0.5)
+        assert got == seen
+        puts = [p for m, p in site.hits if m == "PUT"]
+        assert len(puts) == len(received)
+        faults = _rows(log, "fault")
+        assert faults and faults[0]["fault"] == fault
+        http = [r for r in _rows(log, "http") if r["url"].endswith("/api/doc")]
+        assert [json.loads(r["request"]["body"])["n"] for r in http] == received
+        assert all(r["status"] == 200 for r in http)  # the system's own answers, not ours
+    finally:
+        guard.terminate()
+        guard.wait()

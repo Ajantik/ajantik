@@ -61,3 +61,13 @@ def test_judge_sets_the_report_against_the_record(tmp_path):
     assert len(r["failed_writes"]) == 1
     text = "\n".join(cdp_verdict.summary(r))
     assert "SILENT WRONG" in text and "1 refused by the system" in text
+
+
+def test_latest_is_the_last_state_the_system_showed(tmp_path):
+    get = {"kind": "http", "method": "GET", "url": "https://x/items/1", "status": 200,
+           "response": {"body": json.dumps({"name": "old"})}}
+    rec = Record.load(_record(tmp_path, [_put("new", 204, "https://x/items/1"), get]))
+    assert rec.latest("/items/1") == {"name": "old"}       # a later read wins
+    rec = Record.load(_record(tmp_path, [get, _put("new", 204, "https://x/items/1"),
+                                         _put("lost", 401, "https://x/items/1")]))
+    assert rec.latest("/items/1") == {"name": "new"}       # a refused write does not count

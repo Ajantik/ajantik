@@ -281,6 +281,9 @@ def cdp_cmd(
     allow_write: list[str] = typer.Option([], help="URL regex: the only places pages may write."),
     deny_click: list[str] = typer.Option([], help="Label regex: clicks on it are swallowed."),
     record: list[str] = typer.Option([], help="URL regex: reads recorded too (writes always are)."),
+    fault: list[str] = typer.Option([], help="kind[:url regex[:nth]] — hit that write: "
+                                    "transient_error, phantom_success, phantom_failure, "
+                                    "session_drop."),
 ) -> None:
     """Guard a real browser for a skill that drives it over CDP: block submissions, record writes."""
     import asyncio
@@ -289,6 +292,10 @@ def cdp_cmd(
 
     policy = cdp.load_policy(config, deny=deny, allow_writes=allow_write,
                              deny_clicks=deny_click, record=record)
+    try:
+        policy.faults += [cdp.Fault.parse(f) for f in fault]
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
     if not (policy.deny or policy.deny_clicks or policy.allow_writes is not None):
         typer.echo("Warning: nothing is blocked (no deny, allow_writes or deny_clicks); "
                    "the guard only records.", err=True)

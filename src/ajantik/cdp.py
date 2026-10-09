@@ -26,6 +26,11 @@ Ajantik is told about and give the skill this address, so there is no way around
     python -m ajantik.cdp --upstream http://127.0.0.1:9335 --port 9333 \\
         --config guard.json --log /tmp/cdp.jsonl
 
+  faults  a run may carry faults on chosen writes (`faults`, `--fault`): a save answered
+          503 or 204 without reaching the system, a save that lands and is answered 500, a
+          session that ends (401 from that write on). Each is logged as a `fault` row; `http`
+          rows are only ever what the system itself received and answered.
+
 Bodies sent to a `redact` URL (a login page), and any body with a password, token or secret
 field, are never written to the log: only their length is.
 
@@ -80,6 +85,60 @@ def _compile(patterns: list[str]) -> list[re.Pattern[str]]:
     return [re.compile(p, re.IGNORECASE) for p in patterns]
 
 
+FAULT_KINDS = ("transient_error", "phantom_success", "phantom_failure", "session_drop")
+FAULT_STATUS = {"transient_error": 503, "session_drop": 401, "phantom_failure": 500}
+
+
+@dataclass
+class Fault:
+    """One fault for a run: the `nth` write whose URL matches `match` (and `method`, if given)
+    is hit. transient_error and phantom_success answer it without sending it on; phantom_failure
+    sends it and answers 500; session_drop answers 401 to it and to every matching request
+    after it (or to `times` of them)."""
+
+    kind: str
+    match: re.Pattern[str]
+    method: str | None = None
+    nth: int = 1
+    times: int = 0          # 0: session_drop forever, the others once
+    seen: int = 0
+    hits: int = 0
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Fault:
+        if d["kind"] not in FAULT_KINDS:
+            raise ValueError(f"unknown fault {d['kind']!r}; known: {', '.join(FAULT_KINDS)}")
+        return cls(kind=d["kind"], match=re.compile(d.get("match", ""), re.IGNORECASE),
+                   method=(d.get("method") or "").upper() or None, nth=int(d.get("nth", 1)),
+                   times=int(d.get("times", 0)))
+
+    @classmethod
+    def parse(cls, spec: str) -> Fault:
+        """`kind[:regex[:nth]]`, as given on the command line."""
+        kind, _, rest = spec.partition(":")
+        match, _, nth = rest.rpartition(":") if rest.rsplit(":", 1)[-1].isdigit() else (rest, "", "")
+        return cls.from_dict({"kind": kind, "match": match, "nth": nth or 1})
+
+    def hit(self, method: str, url: str) -> bool:
+        """Does this request get the fault? Counts, so call it once per request."""
+        if not self.match.search(url):
+            return False
+        limit = self.times or (0 if self.kind == "session_drop" else 1)
+        if self.kind == "session_drop" and self.hits:  # dropped: every matching request
+            if limit and self.hits >= limit:
+                return False
+            self.hits += 1
+            return True
+        if (self.method and method.upper() != self.method) or (
+                not self.method and method.upper() in SAFE_METHODS):
+            return False
+        self.seen += 1
+        if self.seen < self.nth or (limit and self.hits >= limit):
+            return False
+        self.hits += 1
+        return True
+
+
 @dataclass
 class Policy:
     deny: list[re.Pattern[str]] = field(default_factory=list)
@@ -87,6 +146,7 @@ class Policy:
     deny_clicks: list[str] = field(default_factory=list)   # JavaScript regex sources
     record: list[re.Pattern[str]] = field(default_factory=list)
     redact: list[re.Pattern[str]] = field(default_factory=list)
+    faults: list[Fault] = field(default_factory=list)
     body_limit: int = 65536
 
     @classmethod
@@ -97,6 +157,8 @@ class Policy:
                    deny_clicks=list(d.get("deny_clicks", [])),
                    record=_compile(d.get("record", [])),
                    redact=_compile(d.get("redact", [])),
+                   faults=[f if isinstance(f, Fault) else Fault.from_dict(f)
+                           for f in d.get("faults", [])],
                    body_limit=int(d.get("body_limit", 65536)))
 
     def blocks(self, method: str, url: str, resource_type: str | None = None,
@@ -136,6 +198,9 @@ class Policy:
                  f"{len(self.record)} record", f"{len(self.redact)} redact"]
         if self.allow_writes is not None:
             parts.insert(1, f"{len(self.allow_writes)} allow_writes")
+        if self.faults:
+            parts.append("faults: " + ", ".join(f"{f.kind} on write #{f.nth} to /{f.match.pattern}/"
+                                                for f in self.faults))
         return ", ".join(parts)
 
 
@@ -223,6 +288,7 @@ class Guard:
         self._ready: dict[str, asyncio.Event] = {}
         self._targets: dict[str, dict[str, Any]] = {}     # guard session id -> targetInfo
         self._open: dict[tuple[str, str], dict[str, Any]] = {}  # (session, network id) -> row
+        self._flip: dict[str, dict[str, Any]] = {}  # phantom_failure: fetch id -> its http row
         self._tasks: set[asyncio.Task[Any]] = set()
 
     async def start(self) -> None:
@@ -371,11 +437,18 @@ class Guard:
             info.get("url", "")).startswith("chrome-extension://")
         reason = self.policy.blocks(method, url, rtype, from_page)
         try:
+            if "responseStatusCode" in p or "responseErrorReason" in p:
+                await self._flip_response(p, sid)
+                return
             if reason:
                 await self.send("Fetch.failRequest", {"requestId": p["requestId"],
                                                       "errorReason": "BlockedByClient"}, sid)
                 self.log.write("blocked", reason=reason, method=method, url=url, type=rtype,
                                **self.policy.body(url, _post_data(req)))
+                return
+            fault = next((f for f in self.policy.faults if f.hit(method, url)), None)
+            if fault:
+                await self._fault(fault, p, sid)
                 return
             if self.policy.records(method, url, rtype) and sid and p.get("networkId"):
                 self._open[(sid, p["networkId"])] = {
@@ -384,6 +457,55 @@ class Guard:
             await self.send("Fetch.continueRequest", {"requestId": p["requestId"]}, sid)
         except CDPError:
             pass  # the page or the request went away
+
+    async def _fault(self, fault: Fault, p: dict[str, Any], sid: str | None) -> None:
+        req = p["request"]
+        method, url = req["method"], req["url"]
+        body = self.policy.body(url, _post_data(req))
+        if fault.kind == "phantom_failure":  # it reaches the system; the answer is replaced
+            self._flip[p["requestId"]] = {"method": method, "url": url,
+                                          "type": p.get("resourceType"), "request": body}
+            await self.send("Fetch.continueRequest", {"requestId": p["requestId"],
+                                                      "interceptResponse": True}, sid)
+            return
+        if fault.kind == "phantom_success":
+            status = 204 if method.upper() in ("PUT", "PATCH", "DELETE") else 200
+            text = "" if status == 204 else "{}"
+        else:
+            status = FAULT_STATUS[fault.kind]
+            text = json.dumps({"message": "Unauthorized" if status == 401
+                               else "Service Unavailable"})
+        await self._fulfill(p["requestId"], status, text, sid)
+        self.log.write("fault", fault=fault.kind, method=method, url=url, answered=status,
+                       sent=False, **body)
+
+    async def _flip_response(self, p: dict[str, Any], sid: str | None) -> None:
+        row = self._flip.pop(p["requestId"], None)
+        if row is None:  # not ours: let it through
+            await self.send("Fetch.continueResponse", {"requestId": p["requestId"]}, sid)
+            return
+        row["status"] = p.get("responseStatusCode")
+        if p.get("responseErrorReason"):
+            row["error"] = p["responseErrorReason"]
+        try:
+            got = await self.send("Fetch.getResponseBody", {"requestId": p["requestId"]}, sid)
+            data = base64.b64decode(got["body"]) if got.get("base64Encoded") else got["body"]
+            row["response"] = self.policy.body(row["url"], data)
+        except CDPError:
+            row["response"] = {}
+        self.log.write("http", **row)  # what the system received and answered
+        await self._fulfill(p["requestId"], 500,
+                            json.dumps({"message": "Internal Server Error"}), sid)
+        self.log.write("fault", fault="phantom_failure", method=row["method"], url=row["url"],
+                       answered=500, sent=True, real_status=row["status"])
+
+    async def _fulfill(self, request_id: str, status: int, text: str, sid: str | None) -> None:
+        params: dict[str, Any] = {"requestId": request_id, "responseCode": status,
+                                  "responseHeaders": [{"name": "Content-Type",
+                                                       "value": "application/json"}]}
+        if text:
+            params["body"] = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        await self.send("Fetch.fulfillRequest", params, sid)
 
     async def _on_response(self, p: dict[str, Any], sid: str | None) -> None:
         row = self._open.get((sid or "", p["requestId"]))
@@ -600,9 +722,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-write", action="append", default=[])
     ap.add_argument("--deny-click", action="append", default=[])
     ap.add_argument("--record", action="append", default=[])
+    ap.add_argument("--fault", action="append", default=[], help="kind[:url regex[:nth]]")
     a = ap.parse_args(argv)
     policy = load_policy(a.config, deny=a.deny, allow_writes=a.allow_write,
                          deny_clicks=a.deny_click, record=a.record)
+    policy.faults += [Fault.parse(f) for f in a.fault]
     try:
         return asyncio.run(run(a.upstream, a.host, a.port, policy, Log(a.log)))
     except KeyboardInterrupt:

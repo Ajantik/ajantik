@@ -154,6 +154,22 @@ CDP_URL=http://127.0.0.1:9333 node step.js          # the skill, unchanged
   `ajantik-cdp.jsonl`, so what a run actually did to the system can be compared with what the
   skill said it did. Bodies sent to a `redact` URL (put the login host there) and any body that
   carries a password, token, secret, SAML assertion or JWT are never written: only their length.
+- **Faults on the real system**, one per run, on the write you choose:
+  `--fault phantom_success:/document/Composition/` answers that save 204 and never sends it;
+  `transient_error` answers 503, `phantom_failure` sends it and answers 500 (a retry duplicates),
+  `session_drop` answers 401 from that write on. The record keeps the system's own answers and
+  the fault apart. (A real app may answer a 401 by logging out for real: expect to log in again.)
+- **The verdict** comes from the record, not from the skill:
+
+  ```sh
+  ajantik test judge --adapter adapter.py --record ajantik-cdp.jsonl --message report.txt
+  ```
+
+  A small adapter reads units from the record (what the system holds) and from the skill's
+  report (what it said), and each unit gets the verdict every Ajantik mode gives: correct, silent
+  wrong, reported honestly, over-cautious. On a real PCN-notification skill, a clean run already
+  showed a step that printed "10 / 11", exited 0, and let the next step bind the missing component
+  to an older record; a lost-save fault showed the save check reading "sent" as "saved".
 
 ## Test your own skill, one run at a time
 
