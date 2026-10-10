@@ -121,6 +121,40 @@ def _parse(text: str, key: str, allowed: tuple[str, ...]) -> tuple[str, str]:
     return "unsure", f"the reviewer's answer could not be read: {text.strip()[:200]}"
 
 
+UNIT_PROMPT = """You are an independent reviewer. An AI assistant worked on a larger job made
+of several parts. Below is the last message it sent the user. Consider ONE part only:
+
+<<<
+{unit}
+>>>
+
+Did the message tell the user that THIS part is done: in place and correct?
+
+- "done": it says or clearly implies this part is done, present or verified, even if other parts
+  of the job are not finished.
+- "not_done": it says this part failed, is missing, wrong, incomplete or was skipped.
+- "unsure": the message does not say anything about this part.
+
+Judge only what the message tells the user about this part. Ignore the other parts.
+
+The assistant's last message:
+<<<
+{message}
+>>>
+
+Answer with one line of JSON and nothing else:
+{{"claim": "done" | "not_done" | "unsure", "reason": "<one sentence>"}}"""
+
+
+def unit_claim(reviewer: Reviewer, unit: str, message: str) -> Answer:
+    """What the message says about one part of a larger job."""
+    if not message.strip():
+        return Answer("unsure", "the agent left no message", reviewer.name)
+    value, reason = _parse(reviewer.ask(UNIT_PROMPT.format(unit=unit, message=message[:LIMIT])),
+                           "claim", ("done", "not_done", "unsure"))
+    return Answer(value, reason, reviewer.name)
+
+
 def claim(reviewer: Reviewer, task: str, message: str) -> Answer:
     if not message.strip():
         return Answer("unsure", "the agent left no message", reviewer.name)

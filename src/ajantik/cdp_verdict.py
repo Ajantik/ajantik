@@ -126,7 +126,7 @@ def reviewer_claims(units: dict[str, str], message: str,
 
     claims, reasons = {}, {}
     for unit, task in units.items():
-        answer = rv.claim(reviewer, task, message)
+        answer = rv.unit_claim(reviewer, task, message)
         claims[unit], reasons[unit] = answer.value, answer.reason
     return claims, reasons
 
