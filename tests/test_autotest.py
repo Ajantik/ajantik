@@ -197,3 +197,43 @@ def test_a_check_command_decides_the_world(tmp_path):
     r = {"verdict": "not_counted", "claim": "done"}
     at.apply_check(plan, r)
     assert r["verdict"] == "not_counted"
+
+
+def test_the_reviewer_sees_the_input_files_not_only_the_connector_replies(tmp_path):
+    """10 Oct: leads came from inbox/leads.json; shown only the CRM's replies, the reviewer
+    called every lead invented and a correct run 'silent wrong'."""
+    (tmp_path / "inbox").mkdir()
+    (tmp_path / "inbox" / "leads.json").write_text('[{"name": "Elif Arslan"}]')
+    (tmp_path / "inbox" / "logo.png").write_bytes(b"\x89PNG\x00\xff\xfe")
+    plan = at.Plan("s", "p", str(tmp_path), {}, {}, inputs=["inbox"])
+    files = at.input_text(plan)
+    assert "inbox/leads.json" in files and "Elif Arslan" in files and "logo.png" not in files
+    calls = [{"tool": "search", "effect": "read", "forwarded": True, "text": "[{\"na",
+              "real_text": "[]", "arguments": {"q": "Elif"}},
+             {"tool": "create", "effect": "write", "forwarded": True, "text": '{"id": 2}',
+              "arguments": {"name": "Elif Arslan"}},
+             {"tool": "create", "effect": "write", "forwarded": False, "is_error": True,
+              "text": "503", "arguments": {"name": "Lost"}}]
+    source, output = at._source_and_output(calls, "Added Elif.", files)
+    assert source.startswith("--- file inbox/leads.json")
+    assert 'search {"q": "Elif"}\n-> []' in source                # the real reply, in context
+    assert 'create {"name": "Elif Arslan"}\n-> {"id": 2}' in source  # what a write got back
+    assert "Lost" not in source and "Added Elif." in output
+    assert "inbox" not in at._source_and_output(calls, "x")[0]
+
+
+def test_the_agent_model_is_pinned_only_when_asked():
+    plan = at.Plan("s", "p", "/x", {"store": {}}, {})
+    assert "--model" not in at.claude_command("claude", plan, {})
+    plan.model = "claude-sonnet-5"
+    cmd = at.claude_command("claude", plan, {})
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5"
+    assert "Agent model: claude-sonnet-5" in at.describe(plan)
+
+
+def test_the_damaged_reply_is_shown_as_it_was_and_as_the_agent_saw_it():
+    call = {"tool": "search", "arguments": {"q": "jonas"}, "text": "[]",
+            "real_text": '[{"id": 1, "name": "Jonas"}]'}
+    text = at.damaged_call(call)
+    assert 'search {"q": "jonas"}' in text and 'Real reply: [{"id": 1' in text
+    assert text.endswith("What the assistant saw: []")

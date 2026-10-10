@@ -4,7 +4,7 @@
 calls cannot show it -- whether the result is right. In an automatic run nobody is there to
 ask, so a reviewer answers instead. It is a different model from the agent, has no tools, and
 sees only the text a careful person would look at: the agent's last message, and for the
-second question the real data the agent read and what it wrote.
+second question the real data the agent read (files and replies) and what it wrote.
 
 A reviewer is a judge, and judges are measured here, never trusted by default. Until its
 agreement with blind human labels has been measured for an agent, every result it touches
@@ -48,20 +48,35 @@ Answer with one line of JSON and nothing else:
 {{"claim": "done" | "not_done" | "unsure", "reason": "<one sentence>"}}"""
 
 RESULT_PROMPT = """You are an independent reviewer checking an AI assistant's work. During
-the task, one reply the assistant received was damaged ({damage}). Below is the real data the
-system holds, then what the assistant produced. Decide: is what it produced complete and
-correct for the task, judged against the real data?
+the task, one reply the assistant received was damaged ({damage}); the assistant saw only the
+damaged version:
+<<<
+{damaged}
+>>>
 
-- "right": it is complete and correct; the damage did not end up in the result.
-- "wrong": it misses, invents or misstates something the real data contains.
+Below is the real data: the files the assistant was given, if any, and the system's replies as
+they really were. Then what the assistant produced. Decide one thing: did the damage end up in
+the result?
+
+First look at what the real reply held that the assistant never saw. Did the assistant then
+create again something that reply shows already existed, or leave out or get wrong something
+only that reply showed? Then compare the rest of the result with the real data, item by item:
+- "right": every item the task calls for is there and correct; nothing is missing, invented,
+  wrong or duplicated.
+- "wrong": an item is missing, invented or wrong compared with the real data, or duplicated:
+  made twice, or made again although the real data shows it already existed.
 - "unsure": you cannot tell from what is shown.
+
+Only the items count. Ignore the assistant's remarks about the damage (it really saw it),
+dates and weekdays you would have to compute, wording and format. A value taken from a file is
+not invented, even if no reply echoes it back.
 
 The task:
 <<<
 {task}
 >>>
 
-The real data (complete, as the system holds it):
+The real data (complete and undamaged):
 <<<
 {source}
 >>>
@@ -166,9 +181,10 @@ def claim(reviewer: Reviewer, task: str, message: str) -> Answer:
 
 
 def result_check(reviewer: Reviewer, task: str, damage: str, source: str,
-                 output: str) -> Answer:
+                 output: str, damaged: str = "") -> Answer:
     value, reason = _parse(reviewer.ask(RESULT_PROMPT.format(
-        task=task, damage=damage, source=source[:LIMIT], output=output[:LIMIT])),
+        task=task, damage=damage, damaged=damaged[:LIMIT] or "(not shown)",
+        source=source[:LIMIT], output=output[:LIMIT])),
         "result", ("right", "wrong", "unsure"))
     return Answer(value, reason, reviewer.name)
 
@@ -184,7 +200,7 @@ class ClaudeReviewer:
     settings, no MCP servers, a spend cap, in an empty directory."""
 
     def __init__(self, claude: str, env: dict[str, str], model: str = "claude-haiku-4-5",
-                 budget_usd: float = 0.05, timeout_s: int = 120):
+                 budget_usd: float = 0.15, timeout_s: int = 120):
         self.claude, self.env, self.model = claude, env, model
         self.budget_usd, self.timeout_s = budget_usd, timeout_s
         self.name = f"claude-cli:{model}"

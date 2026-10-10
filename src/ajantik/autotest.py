@@ -171,6 +171,7 @@ class Plan:
     before: str | None = None
     inputs: list[str] = field(default_factory=list)  # project files the skill reads directly
     check: str | None = None  # a command that prints {"problems": [...]} about the real system
+    model: str | None = None  # the agent's model; None is the user's Claude Code default
 
     def write_tools(self) -> list[str]:
         return [f"{s}: {t['name']}" for s, ts in self.tools.items() for t in ts
@@ -216,6 +217,8 @@ def describe(plan: Plan) -> str:
         lines.append("Copied into each run as files: " + ", ".join(plan.inputs))
     if plan.check:
         lines.append(f"After each run, the system is checked with: {plan.check}")
+    if plan.model:
+        lines.append(f"Agent model: {plan.model}")
     lines += [f"Note: {n}" for n in plan.notes]
     lines.append("The skill runs once with no fault, then once per fault it can trigger "
                  f"(up to 6{'' if plan.repeat == 1 else f', x{plan.repeat}'}), headless, "
@@ -244,7 +247,7 @@ def claude_command(claude: str, plan: Plan, config: dict[str, Any]) -> list[str]
     return [claude, "-p", plan.prompt, "--output-format", "json",
             "--mcp-config", json.dumps(config), "--strict-mcp-config",
             "--allowedTools", allowed, "--max-budget-usd", str(plan.budget_usd),
-            "--no-session-persistence"]
+            "--no-session-persistence", *(["--model", plan.model] if plan.model else [])]
 
 
 def sandbox(lab: Lab, plan: Plan) -> Path:
@@ -305,12 +308,40 @@ def faults_for(calls: list[dict[str, Any]]) -> list[str]:
     return out
 
 
-def _source_and_output(calls: list[dict[str, Any]], message: str) -> tuple[str, str]:
-    source = "\n\n".join(c.get("real_text") or c.get("text", "") for c in calls
-                         if c["effect"] == "read" and c.get("forwarded") and not c.get("is_error"))
+def input_text(plan: Plan, limit: int = 20000) -> str:
+    """The input files as the user gave them, before any run moved or edited them: the
+    reviewer must see what the skill read from files, not only what the connectors said."""
+    parts: list[str] = []
+    for rel in plan.inputs:
+        root = Path(plan.cwd) / rel
+        files = sorted(f for f in root.rglob("*") if f.is_file()) if root.is_dir() else [root]
+        for f in files:
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            parts.append(f"--- file {f.relative_to(plan.cwd)} ---\n{text[:limit]}")
+    return "\n\n".join(parts)
+
+
+def _source_and_output(calls: list[dict[str, Any]], message: str,
+                       files: str = "") -> tuple[str, str]:
+    replies = "\n\n".join(
+        f"{c['tool']} {json.dumps(c.get('arguments', {}), ensure_ascii=False)}\n"
+        f"-> {c.get('real_text') or c.get('text', '')}"
+        for c in calls if c.get("forwarded") and not c.get("is_error"))
+    replies = f"--- the system's real replies, call by call ---\n{replies}"
+    source = f"{files}\n\n{replies}" if files else replies
     writes = "\n\n".join(json.dumps(c["arguments"], ensure_ascii=False) for c in calls
                          if c["effect"] == "write" and not c.get("is_error"))
     return source, f"{writes}\n\n--- last message ---\n{message}"
+
+
+def damaged_call(call: dict[str, Any]) -> str:
+    """The one damaged reply: what the system really answered, and what the agent saw."""
+    return (f"{call['tool']} {json.dumps(call.get('arguments', {}), ensure_ascii=False)}\n"
+            f"Real reply: {call.get('real_text') or '(not kept)'}\n"
+            f"What the assistant saw: {call.get('text') or '(empty)'}")
 
 
 def review(lab: Lab, plan: Plan, reviewer: rv.Reviewer, message: str,
@@ -332,9 +363,10 @@ def review(lab: Lab, plan: Plan, reviewer: rv.Reviewer, message: str,
         target = next(c for c in calls if c.get("fault_applied"))
         kind = split_fault(run["fault"])[0]
         if kind in ("truncated_reply", "premature_read"):
-            source, output = _source_and_output(calls, message)
+            source, output = _source_and_output(calls, message, input_text(plan))
             damage = "cut in half" if kind == "truncated_reply" else "emptied"
-            ans = rv.result_check(reviewer, plan.prompt, damage, source, output)
+            ans = rv.result_check(reviewer, plan.prompt, damage, source, output,
+                                  damaged_call(target))
         else:
             later = [c for c in calls if c["seq"] > target["seq"] and c["tool"] == target["tool"]
                      and c.get("forwarded") and not c.get("is_error")]

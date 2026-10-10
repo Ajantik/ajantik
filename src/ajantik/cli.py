@@ -456,6 +456,8 @@ def test_run(
     check: str | None = typer.Option(None, help="A command run after each run that prints "
                                      '{"problems": [...]} about the real system (duplicates, '
                                      "missing records). The verdict then rests on it."),
+    model: str | None = typer.Option(None, help="The agent's model (default: your Claude Code "
+                                     "default). Pin it to compare runs."),
     plan_file: Path | None = typer.Option(None, hidden=True),
     lab_name: str | None = typer.Option(None, hidden=True),
 ) -> None:
@@ -474,7 +476,7 @@ def test_run(
                 raise ValueError(f"Not found in {cwd}: {', '.join(missing)}")
             plan = at.make_plan(skill, prompt, cwd.resolve(), budget_usd=budget, repeat=repeat,
                                 reviewer_model=reviewer_model, before=before, inputs=with_,
-                                check=check)
+                                check=check, model=model)
         except ValueError as exc:
             typer.echo(str(exc))
             raise typer.Exit(2) from exc
