@@ -155,3 +155,21 @@ def test_mcp_tools_plan_then_refuse_to_start_unconfirmed(project, monkeypatch):
     plan_id = text.split("plan_id: ")[1].split()[0]
     text, err = mcp_server.call("start_skill_test", {"plan_id": plan_id, "confirmed": False})
     assert err and "confirm" in text
+
+
+def test_inputs_the_skill_reads_as_files_are_copied_fresh_into_every_run(tmp_path):
+    project = tmp_path / "project"
+    (project / "inbox").mkdir(parents=True)
+    (project / "inbox" / "leads.json").write_text('[{"name": "A"}]')
+    (project / "notes.txt").write_text("hello")
+    plan = at.Plan("s", "p", str(project), {}, {}, inputs=["inbox", "notes.txt"])
+    lab = at.Lab("inputs-test", tmp_path / "home")
+    box = at.sandbox(lab, plan)
+    assert (box / "inbox" / "leads.json").read_text() == '[{"name": "A"}]'
+    assert (box / "notes.txt").read_text() == "hello"
+    (box / "inbox" / "leads.json").unlink()            # a run that "processed" its inbox
+    (box / "notes.txt").write_text("changed")
+    at.copy_inputs(plan, box)                          # the next run starts as the first did
+    assert (box / "inbox" / "leads.json").exists()
+    assert (box / "notes.txt").read_text() == "hello"
+    assert "Copied into each run as files: inbox, notes.txt" in at.describe(plan)

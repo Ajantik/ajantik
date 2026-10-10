@@ -169,6 +169,7 @@ class Plan:
     repeat: int = 1
     reviewer_model: str = "claude-haiku-4-5"
     before: str | None = None
+    inputs: list[str] = field(default_factory=list)  # project files the skill reads directly
 
     def write_tools(self) -> list[str]:
         return [f"{s}: {t['name']}" for s, ts in self.tools.items() for t in ts
@@ -210,6 +211,8 @@ def describe(plan: Plan) -> str:
     lines = [f'Skill "{plan.skill}", prompt: "{plan.prompt}"',
              f"Connectors behind the fault proxy: {', '.join(plan.servers)}"]
     lines.append("Tools that change things: " + (", ".join(writes) if writes else "none"))
+    if plan.inputs:
+        lines.append("Copied into each run as files: " + ", ".join(plan.inputs))
     lines += [f"Note: {n}" for n in plan.notes]
     lines.append("The skill runs once with no fault, then once per fault it can trigger "
                  f"(up to 6{'' if plan.repeat == 1 else f', x{plan.repeat}'}), headless, "
@@ -243,7 +246,8 @@ def claude_command(claude: str, plan: Plan, config: dict[str, Any]) -> list[str]
 
 def sandbox(lab: Lab, plan: Plan) -> Path:
     """An empty working directory, so the agent reaches data only through the wrapped
-    servers. A project-level skill is copied in so it still loads."""
+    servers. A project-level skill is copied in so it still loads, and so are the inputs the
+    skill reads as files (`plan.inputs`, e.g. a leads file): those are not what is tested."""
     box = lab.dir / "sandbox"
     if box.exists():
         shutil.rmtree(box)
@@ -251,7 +255,24 @@ def sandbox(lab: Lab, plan: Plan) -> Path:
     project_skill = Path(plan.cwd) / ".claude" / "skills" / plan.skill
     if project_skill.is_dir():
         shutil.copytree(project_skill, box / ".claude" / "skills" / plan.skill)
+    copy_inputs(plan, box)
     return box
+
+
+def copy_inputs(plan: Plan, box: Path) -> None:
+    """The skill's input files, fresh: a run that moved or edited them must not change the
+    next run's starting point."""
+    for rel in plan.inputs:
+        src, dst = Path(plan.cwd) / rel, box / rel
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        elif dst.exists():
+            dst.unlink()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        elif src.exists():
+            shutil.copy2(src, dst)
 
 
 Agent = Callable[[Plan, Lab, Path], tuple[str, str]]  # -> (stdout, stderr)
@@ -345,6 +366,7 @@ def run_test(plan: Plan, agent: Agent, reviewer: rv.Reviewer, *, home: Path | No
         if plan.before:
             subprocess.run(plan.before, shell=True, cwd=plan.cwd, check=False,
                            capture_output=True, timeout=120)
+        copy_inputs(plan, box)
         with lab.lock():
             lab._write("schedule.json", [fault])
             lab.arm()
@@ -368,8 +390,11 @@ def run_test(plan: Plan, agent: Agent, reviewer: rv.Reviewer, *, home: Path | No
     first = one("clean")
     calls = merged(lab.rows(first["run"])) if first.get("run") else []
     if not calls:
+        said = (first.get("agent_message") or "").strip().replace("\n", " ")
         tell(state="failed", error="No call reached the wrapped connectors in the clean run: "
-             "the skill did not use them, or the agent failed. Nothing was tested.",
+             "the skill did not use them, or the agent failed. Nothing was tested. Each run starts "
+             "in an empty folder; if the skill reads a file of the project (a list, a CSV), pass "
+             "it with --with." + (f'\nThe agent said: "{said[:300]}"' if said else ""),
              first=first)
         return status
     faults = [f for f in faults_for(calls) for _ in range(plan.repeat)]

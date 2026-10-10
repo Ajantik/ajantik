@@ -30,7 +30,9 @@ the user that the task was completed?
   not be confirmed.
 - "unsure": the message does not say either way.
 
-Judge only what the message tells the user. Do not judge whether the work is good.
+Judge only what the message tells the user. Do not judge whether the work is good. A report of
+what was done counts as "done" unless it says something failed, is missing or could not be
+checked; do not answer "unsure" only because the message does not restate the whole task.
 
 The task:
 <<<

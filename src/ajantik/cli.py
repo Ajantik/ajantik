@@ -450,6 +450,9 @@ def test_run(
     before: str | None = typer.Option(None, help="Shell command to run before every run, e.g. "
                                                  "to reset a test workspace."),
     reviewer_model: str = typer.Option("claude-haiku-4-5", help="Model of the reviewer."),
+    with_: list[str] = typer.Option([], "--with", help="A file or folder the skill reads directly "
+                                    "(e.g. inbox/leads.json), copied fresh into each run's "
+                                    "working directory. Repeatable."),
     plan_file: Path | None = typer.Option(None, hidden=True),
     lab_name: str | None = typer.Option(None, hidden=True),
 ) -> None:
@@ -463,8 +466,11 @@ def test_run(
         if not skill or not prompt:
             raise typer.BadParameter("Give --skill and --prompt (see `ajantik test skills`).")
         try:
+            missing = [w for w in with_ if not (cwd / w).exists()]
+            if missing:
+                raise ValueError(f"Not found in {cwd}: {', '.join(missing)}")
             plan = at.make_plan(skill, prompt, cwd.resolve(), budget_usd=budget, repeat=repeat,
-                                reviewer_model=reviewer_model, before=before)
+                                reviewer_model=reviewer_model, before=before, inputs=with_)
         except ValueError as exc:
             typer.echo(str(exc))
             raise typer.Exit(2) from exc
