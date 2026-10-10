@@ -208,10 +208,13 @@ def browser(tmp_path: Path):
                              "--no-default-browser-check", "about:blank"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     port_file = profile / "DevToolsActivePort"
-    for _ in range(100):
+    for _ in range(300):  # a cold Chrome on a CI runner can take more than 10 s
         if port_file.exists() and port_file.read_text().strip():
             break
         time.sleep(0.1)
+    else:
+        proc.kill()
+        pytest.fail("Chrome did not open its debugging port within 30 s")
     port = port_file.read_text().split()[0]
     yield proc, f"http://127.0.0.1:{port}"
     proc.kill()
