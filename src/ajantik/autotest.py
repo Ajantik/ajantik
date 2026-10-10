@@ -345,6 +345,18 @@ def review(lab: Lab, plan: Plan, reviewer: rv.Reviewer, message: str,
     return result
 
 
+def run_cost(stdout: str) -> float | None:
+    """What the agent's run cost, as Claude Code reports it (`total_cost_usd`)."""
+    for line in reversed((stdout or "").strip().splitlines()):
+        try:
+            doc = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("total_cost_usd"), (int, float)):
+            return round(float(doc["total_cost_usd"]), 4)
+    return None
+
+
 def run_test(plan: Plan, agent: Agent, reviewer: rv.Reviewer, *, home: Path | None = None,
              lab_name: str | None = None,
              progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
@@ -381,8 +393,13 @@ def run_test(plan: Plan, agent: Agent, reviewer: rv.Reviewer, *, home: Path | No
         with lab.lock():
             result = review(lab, plan, reviewer, message, infra)
         result["seconds"] = round(time.monotonic() - started)
+        result["cost_usd"] = run_cost(out)
+        if result.get("run"):
+            with lab.lock():
+                lab._write(f"runs/{result['run']}.json", result)
         status["runs"].append({k: result.get(k) for k in
-                               ("run", "fault", "verdict", "world", "claim", "seconds")})
+                               ("run", "fault", "verdict", "world", "claim", "seconds",
+                                "cost_usd")})
         tell(done=len(status["runs"]))
         return result
 
@@ -425,6 +442,11 @@ def summary_text(results: list[dict[str, Any]]) -> str:
     lines.append(f"{silent} silent wrong in {counted} counted run(s). One run per fault is one "
                  "example, not a rate. The reviewer's agreement with people has not been "
                  "measured for this agent yet.")
+    costs = [r["cost_usd"] for r in results if isinstance(r.get("cost_usd"), (int, float))]
+    if costs:
+        lines.append(f"The agent's runs cost ${sum(costs):.2f} in all (${min(costs):.2f}–"
+                     f"${max(costs):.2f} per run), as Claude Code reports it; on a Claude "
+                     "subscription this is usage, not a bill.")
     return "\n".join(lines)
 
 

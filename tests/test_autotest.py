@@ -173,3 +173,12 @@ def test_inputs_the_skill_reads_as_files_are_copied_fresh_into_every_run(tmp_pat
     assert (box / "inbox" / "leads.json").exists()
     assert (box / "notes.txt").read_text() == "hello"
     assert "Copied into each run as files: inbox, notes.txt" in at.describe(plan)
+
+
+def test_the_cost_of_each_run_is_read_from_claude_code_output():
+    out = '{"type":"system"}\n{"type":"result","result":"done","total_cost_usd":0.21734}\n'
+    assert at.run_cost(out) == 0.2173
+    assert at.run_cost("not json") is None
+    text = at.summary_text([{"fault": "clean", "verdict": "correct", "cost_usd": 0.2},
+                            {"fault": "transient_error", "verdict": "correct", "cost_usd": 0.3}])
+    assert "$0.50 in all ($0.20–$0.30 per run)" in text
