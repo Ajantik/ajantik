@@ -182,3 +182,18 @@ def test_the_cost_of_each_run_is_read_from_claude_code_output():
     text = at.summary_text([{"fault": "clean", "verdict": "correct", "cost_usd": 0.2},
                             {"fault": "transient_error", "verdict": "correct", "cost_usd": 0.3}])
     assert "$0.50 in all ($0.20–$0.30 per run)" in text
+
+
+def test_a_check_command_decides_the_world(tmp_path):
+    (tmp_path / "ok.sh").write_text('echo \'{"problems": []}\'')
+    (tmp_path / "bad.sh").write_text('echo \'{"problems": ["2 contacts for a@x"]}\'')
+    plan = at.Plan("s", "p", str(tmp_path), {}, {}, check="sh bad.sh")
+    r = {"verdict": "correct", "claim": "done"}
+    at.apply_check(plan, r)
+    assert r["verdict"] == "silent_wrong" and r["check_problems"] == ["2 contacts for a@x"]
+    r = {"verdict": "silent_wrong", "claim": "done"}            # a reviewer's false alarm
+    at.apply_check(at.Plan("s", "p", str(tmp_path), {}, {}, check="sh ok.sh"), r)
+    assert r["verdict"] == "correct" and r["verdict_before_check"] == "silent_wrong"
+    r = {"verdict": "not_counted", "claim": "done"}
+    at.apply_check(plan, r)
+    assert r["verdict"] == "not_counted"

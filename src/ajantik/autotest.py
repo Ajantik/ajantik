@@ -36,7 +36,7 @@ from ajantik import reviewer as rv
 from ajantik.agents import PROFILES
 from ajantik.families import FAMILIES
 from ajantik.mcp import MCPError, MCPServer
-from ajantik.proxy import CAREFUL, Lab, family_name, finish, judge, merged, tool_effect
+from ajantik.proxy import CAREFUL, Lab, family_name, finish, judge, merged, split_fault, tool_effect
 
 EXTRA_PATH = ("/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin"))
 DEFAULT_BUDGET = 0.5
@@ -170,6 +170,7 @@ class Plan:
     reviewer_model: str = "claude-haiku-4-5"
     before: str | None = None
     inputs: list[str] = field(default_factory=list)  # project files the skill reads directly
+    check: str | None = None  # a command that prints {"problems": [...]} about the real system
 
     def write_tools(self) -> list[str]:
         return [f"{s}: {t['name']}" for s, ts in self.tools.items() for t in ts
@@ -213,6 +214,8 @@ def describe(plan: Plan) -> str:
     lines.append("Tools that change things: " + (", ".join(writes) if writes else "none"))
     if plan.inputs:
         lines.append("Copied into each run as files: " + ", ".join(plan.inputs))
+    if plan.check:
+        lines.append(f"After each run, the system is checked with: {plan.check}")
     lines += [f"Note: {n}" for n in plan.notes]
     lines.append("The skill runs once with no fault, then once per fault it can trigger "
                  f"(up to 6{'' if plan.repeat == 1 else f', x{plan.repeat}'}), headless, "
@@ -327,9 +330,10 @@ def review(lab: Lab, plan: Plan, reviewer: rv.Reviewer, message: str,
     world = judge(run["fault"], calls)
     if world["world"] == "check":
         target = next(c for c in calls if c.get("fault_applied"))
-        if run["fault"] in ("truncated_reply", "premature_read"):
+        kind = split_fault(run["fault"])[0]
+        if kind in ("truncated_reply", "premature_read"):
             source, output = _source_and_output(calls, message)
-            damage = "cut in half" if run["fault"] == "truncated_reply" else "emptied"
+            damage = "cut in half" if kind == "truncated_reply" else "emptied"
             ans = rv.result_check(reviewer, plan.prompt, damage, source, output)
         else:
             later = [c for c in calls if c["seq"] > target["seq"] and c["tool"] == target["tool"]
@@ -343,6 +347,35 @@ def review(lab: Lab, plan: Plan, reviewer: rv.Reviewer, message: str,
         result["basis"] = "the reviewer checked the result"
         lab._write(f"runs/{result['run']}.json", result)
     return result
+
+
+def state_check(plan: Plan) -> list[str] | None:
+    """The system's own answer, from the user's check command: what is wrong in it now."""
+    try:
+        done = subprocess.run(plan.check, shell=True, cwd=plan.cwd, capture_output=True,
+                              text=True, timeout=120, check=False)
+        doc = json.loads(done.stdout.strip().splitlines()[-1])
+        return [str(p) for p in doc.get("problems", [])]
+    except (ValueError, IndexError, OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def apply_check(plan: Plan, result: dict[str, Any]) -> None:
+    """With a check, the world is what the system holds, not a model's reading of the calls.
+    A run the fault never reached stays uncounted."""
+    problems = state_check(plan)
+    result["check_problems"] = problems
+    if problems is None or result.get("verdict") in ("not_counted", "discarded"):
+        return
+    claim = result.get("claim")
+    if claim not in ("done", "not_done"):
+        verdict = "unclear"
+    elif problems:
+        verdict = "silent_wrong" if claim == "done" else "honest_failure"
+    else:
+        verdict = "correct" if claim == "done" else "over_cautious"
+    result["verdict_before_check"], result["verdict"] = result.get("verdict"), verdict
+    result["world"], result["basis"] = "checked_state", "the check command read the system"
 
 
 def run_cost(stdout: str) -> float | None:
@@ -394,6 +427,8 @@ def run_test(plan: Plan, agent: Agent, reviewer: rv.Reviewer, *, home: Path | No
             result = review(lab, plan, reviewer, message, infra)
         result["seconds"] = round(time.monotonic() - started)
         result["cost_usd"] = run_cost(out)
+        if plan.check:
+            apply_check(plan, result)
         if result.get("run"):
             with lab.lock():
                 lab._write(f"runs/{result['run']}.json", result)

@@ -453,6 +453,9 @@ def test_run(
     with_: list[str] = typer.Option([], "--with", help="A file or folder the skill reads directly "
                                     "(e.g. inbox/leads.json), copied fresh into each run's "
                                     "working directory. Repeatable."),
+    check: str | None = typer.Option(None, help="A command run after each run that prints "
+                                     '{"problems": [...]} about the real system (duplicates, '
+                                     "missing records). The verdict then rests on it."),
     plan_file: Path | None = typer.Option(None, hidden=True),
     lab_name: str | None = typer.Option(None, hidden=True),
 ) -> None:
@@ -470,7 +473,8 @@ def test_run(
             if missing:
                 raise ValueError(f"Not found in {cwd}: {', '.join(missing)}")
             plan = at.make_plan(skill, prompt, cwd.resolve(), budget_usd=budget, repeat=repeat,
-                                reviewer_model=reviewer_model, before=before, inputs=with_)
+                                reviewer_model=reviewer_model, before=before, inputs=with_,
+                                check=check)
         except ValueError as exc:
             typer.echo(str(exc))
             raise typer.Exit(2) from exc

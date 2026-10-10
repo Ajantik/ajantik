@@ -340,3 +340,25 @@ def test_end_asks_for_a_check_only_when_needed(tmp_path, monkeypatch):
                        "fault_applied": True, "text": ""})
     out = CliRunner().invoke(app, ["test", "end", "--said", "done"], input="r\n")
     assert "cannot tell" in out.output and "CORRECT" in out.output, out.output
+
+
+def test_a_targeted_fault_hits_only_the_nth_call_of_its_tool():
+    def c(seq, tool, effect, **kw):
+        return {"seq": seq, "tool": tool, "effect": effect, **kw}
+    f = "premature_read@search#2"
+    assert decide(f, "read", [], "search")["transform"] is None               # 1st search
+    assert decide(f, "read", [c(1, "search", "read")], "search")["transform"] == "premature_read"
+    assert decide(f, "read", [c(1, "search", "read"), c(2, "search", "read")],
+                  "search")["transform"] is None                               # 3rd: untouched
+    p = "phantom_success@create#2"
+    assert decide(p, "write", [], "create")["forward"]
+    assert not decide(p, "write", [c(1, "create", "write")], "create")["forward"]
+    s = "session_drop@create#1"
+    first = decide(s, "write", [c(1, "search", "read")], "create")
+    assert first["session_dead"] and not first["forward"]
+    later = decide(s, "read", [c(1, "search", "read"), c(2, "create", "write", session_dead=True)],
+                   "search")
+    assert later["session_dead"]                                               # stays dropped
+    from ajantik.proxy import family_name, split_fault
+    assert split_fault(f) == ("premature_read", "search", 2)
+    assert family_name(f) == "Premature read @ search #2"

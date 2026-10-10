@@ -63,8 +63,20 @@ CAREFUL = {
 CLAIMS = ("done", "not_done", "unsure")
 
 
+def split_fault(fault: str) -> tuple[str, str | None, int | None]:
+    """`kind`, or `kind@tool#n`: the fault on the n-th call of that tool instead of on the first
+    call of its kind. (`premature_read@search_contacts#2`)"""
+    kind, _, target = fault.partition("@")
+    if not target:
+        return kind, None, None
+    tool, _, n = target.partition("#")
+    return kind, tool, int(n or 1)
+
+
 def family_name(fault: str) -> str:
-    return "No fault" if fault == "clean" else FAMILIES[fault].name
+    kind, tool, n = split_fault(fault)
+    name = "No fault" if kind == "clean" else FAMILIES[kind].name
+    return f"{name} @ {tool} #{n}" if tool else name
 
 
 if os.name == "nt":
@@ -243,12 +255,17 @@ class Lab:
 # -- one decision per call -----------------------------------------------------------
 
 
-def decide(fault: str, effect: str, prior: list[dict[str, Any]]) -> dict[str, Any]:
+def decide(fault: str, effect: str, prior: list[dict[str, Any]],
+           tool: str | None = None) -> dict[str, Any]:
     """What happens to this call, from the run's fault and the calls before it.
 
     Returns {forward, error, text, transform, fault_applied, session_dead}. Pure, so the
-    rules can be tested without a server.
+    rules can be tested without a server. A targeted fault (`kind@tool#n`) hits only the n-th
+    call of that tool; a session dropped there stays dropped.
     """
+    kind, target, nth = split_fault(fault)
+    if target is not None:
+        return _decide_targeted(kind, target, nth or 1, effect, prior, tool)
     writes = sum(1 for c in prior if c["effect"] == "write")
     # A read that failed on its own (an agent calling a file tool on a folder is common) is not
     # the first read a read fault means: there was no reply to damage. A read still in flight
@@ -268,6 +285,28 @@ def decide(fault: str, effect: str, prior: list[dict[str, Any]]) -> dict[str, An
             return {**plain, "forward": False, "fault_applied": True}  # text: a sample
     if effect == "read" and reads == 0 and fault in ("truncated_reply", "premature_read"):
         return {**plain, "transform": fault}
+    return plain
+
+
+def _decide_targeted(kind: str, target: str, nth: int, effect: str,
+                     prior: list[dict[str, Any]], tool: str | None) -> dict[str, Any]:
+    plain = {"forward": True, "error": False, "text": None, "transform": None,
+             "fault_applied": False, "session_dead": False}
+    if kind == "session_drop" and any(c.get("session_dead") for c in prior):
+        return {**plain, "forward": False, "error": True, "text": SESSION_ENDED,
+                "fault_applied": True, "session_dead": True}
+    if tool != target or sum(1 for c in prior if c.get("tool") == target) + 1 != nth:
+        return plain
+    if kind == "session_drop":
+        return {**plain, "forward": False, "error": True, "text": SESSION_ENDED,
+                "fault_applied": True, "session_dead": True}
+    if effect == "write" and kind in ("transient_error", "permanent_error"):
+        return {**plain, "forward": False, "error": True, "text": UNAVAILABLE,
+                "fault_applied": True}
+    if effect == "write" and kind == "phantom_success":
+        return {**plain, "forward": False, "fault_applied": True}
+    if effect == "read" and kind in ("truncated_reply", "premature_read"):
+        return {**plain, "transform": kind}
     return plain
 
 
@@ -304,6 +343,7 @@ def judge(fault: str, calls: list[dict[str, Any]]) -> dict[str, Any]:
     summary; calling that "acted on bad data" was a false alarm. Where the calls cannot see the
     world, the person who can is asked.
     """
+    fault = split_fault(fault)[0]
     base = {"calls": len(calls), "fault_call": None, "hint": ""}
     if not calls:
         return {**base, "world": "no_calls"}
@@ -460,7 +500,7 @@ class FaultProxy:
                 plan, seq = None, 0
             else:
                 rows = self.lab.rows(run["run"])
-                plan = decide(run["fault"], effect, merged(rows))
+                plan = decide(run["fault"], effect, merged(rows), name)
                 seq = sum(1 for r in rows if r["event"] == "call") + 1
                 # The call row goes in before the real call, so a second call arriving
                 # meanwhile already counts this one when it decides.
