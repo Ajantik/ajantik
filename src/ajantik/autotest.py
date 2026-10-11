@@ -22,6 +22,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from ajantik import reviewer as rv
 from ajantik.agents import PROFILES
 from ajantik.families import FAMILIES
 from ajantik.mcp import MCPError, MCPServer
+from ajantik.mcp_http import AuthRequired, HTTPServer, bridge_command, expand
 from ajantik.proxy import CAREFUL, Lab, family_name, finish, judge, merged, split_fault, tool_effect
 
 EXTRA_PATH = ("/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin"))
@@ -128,7 +130,8 @@ def is_ajantik_itself(spec: dict[str, Any]) -> bool:
 
 
 def discover_servers(cwd: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """The stdio MCP servers Claude Code would start in `cwd`: user, project-local and
+    """The MCP servers Claude Code would give the skill in `cwd`, local (a command) and remote
+    (a URL, with its headers as written, `${VAR}` unexpanded): user, project-local and
     `.mcp.json` scopes, later ones winning. Returns (servers, notes about skipped ones)."""
     config_file, _ = claude_dirs()
     servers: dict[str, dict[str, Any]] = {}
@@ -143,8 +146,13 @@ def discover_servers(cwd: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
         scopes.append(json.loads(project_file.read_text(encoding="utf-8")).get("mcpServers") or {})
     for scope in scopes:
         for name, spec in scope.items():
-            if spec.get("type", "stdio") != "stdio" or not spec.get("command"):
-                notes.append(f"{name}: a remote server ({spec.get('type')}); not tested yet")
+            kind = spec.get("type", "stdio" if spec.get("command") else "http")
+            if kind in ("http", "sse", "streamable-http") and spec.get("url"):
+                servers[name] = {"type": "sse" if kind == "sse" else "http", "url": spec["url"],
+                                 "headers": dict(spec.get("headers") or {})}
+                continue
+            if kind != "stdio" or not spec.get("command"):
+                notes.append(f"{name}: a {kind} server Ajantik cannot reach; left out")
                 servers.pop(name, None)
                 continue
             if is_ajantik_itself(spec):
@@ -192,26 +200,77 @@ def make_plan(skill_name: str, prompt: str, cwd: Path, **opts: Any) -> Plan:
         raise ValueError(f"No skill named {skill_name!r} for {cwd}. Skills found: {names}.")
     servers, notes = discover_servers(cwd)
     if not servers:
-        raise ValueError("Claude Code has no local (stdio) MCP server configured here, so "
-                         "there is nothing to put a fault in front of.")
+        raise ValueError("Claude Code has no MCP server configured here, so there is nothing "
+                         "to put a fault in front of.")
     tools: dict[str, list[dict[str, str]]] = {}
     env = run_env()
+    kept: dict[str, dict[str, Any]] = {}
     for name, spec in servers.items():
         try:
-            with MCPServer([spec["command"], *spec.get("args", [])],
-                           env={**env, **(spec.get("env") or {})}) as s:
-                tools[name] = [{"name": t["name"], "effect": tool_effect(t)[0],
-                                "basis": tool_effect(t)[1]} for t in s.list_tools()]
+            if spec.get("url"):
+                via, listed = remote_tools(spec, env, notes, name)
+                kept[name] = public_remote(spec, via)
+            else:
+                with MCPServer([spec["command"], *spec.get("args", [])],
+                               env={**env, **(spec.get("env") or {})}) as s:
+                    listed = s.list_tools()
+                kept[name] = spec
+            tools[name] = [{"name": t["name"], "effect": tool_effect(t)[0],
+                            "basis": tool_effect(t)[1]} for t in listed]
         except (MCPError, OSError) as exc:
             notes.append(f"{name}: could not be started to list its tools ({exc}); left out")
-    servers = {n: s for n, s in servers.items() if n in tools}
-    return Plan(skill_name, prompt, str(cwd), servers, tools, notes, **opts)
+            kept.pop(name, None)
+    if not kept:
+        raise ValueError("None of the connectors could be reached, so nothing would be "
+                         "tested:\n" + "\n".join(f"  {n}" for n in notes))
+    return Plan(skill_name, prompt, str(cwd), kept, tools, notes, **opts)
+
+
+def remote_tools(spec: dict[str, Any], env: dict[str, str], notes: list[str],
+                 name: str) -> tuple[str, list[dict[str, Any]]]:
+    """Reach a remote server directly over HTTP; if it wants an OAuth login, or speaks only
+    the older SSE transport, through `mcp-remote`, which logs in once in the browser."""
+    url = expand(spec["url"])  # Claude Code expands ${VAR} from the user's own environment
+    if spec.get("type") != "sse":
+        try:
+            with HTTPServer(url, {k: expand(v) for k, v in spec["headers"].items()}) as s:
+                return "http", s.list_tools()
+        except AuthRequired:
+            if spec["headers"]:
+                raise
+            notes.append(f"{name}: the server wants a login; reached through mcp-remote, which "
+                         "may open your browser once")
+    with MCPServer(bridge_command(url, "sse-only" if spec.get("type") == "sse"
+                                  else "http-first"), env=env) as s:
+        return "bridge", s.list_tools()
+
+
+def public_remote(spec: dict[str, Any], via: str) -> dict[str, Any]:
+    """What a plan keeps of a remote server: no header values and no query string, which may
+    hold a key. The proxy reads the real ones from Claude Code's config when it starts."""
+    return {"type": spec["type"], "url": spec["url"].split("?")[0], "via": via,
+            "headers": sorted(spec["headers"]),
+            "vars": sorted(set(VAR.findall(spec["url"] + " ".join(spec["headers"].values()))))}
+
+
+VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def remote_env(plan: Plan) -> dict[str, str]:
+    """The variables a remote server's URL or headers name, from the user's environment: the
+    proxy expands them when it starts, as Claude Code would. Names only are in the plan."""
+    names = {v for spec in plan.servers.values() for v in spec.get("vars", [])}
+    return {n: os.environ[n] for n in sorted(names) if n in os.environ}
 
 
 def describe(plan: Plan) -> str:
     writes = plan.write_tools()
     lines = [f'Skill "{plan.skill}", prompt: "{plan.prompt}"',
              f"Connectors behind the fault proxy: {', '.join(plan.servers)}"]
+    for name, spec in plan.servers.items():
+        if spec.get("url"):
+            how = "over HTTP" if spec["via"] == "http" else "through mcp-remote"
+            lines.append(f"  {name}: remote, {spec['url']}, {how}")
     lines.append("Tools that change things: " + (", ".join(writes) if writes else "none"))
     if plan.inputs:
         lines.append("Copied into each run as files: " + ", ".join(plan.inputs))
@@ -234,12 +293,18 @@ def describe(plan: Plan) -> str:
 
 def mcp_config(plan: Plan, lab: Lab) -> dict[str, Any]:
     home = str(lab.dir.parent.parent)
-    return {"mcpServers": {
-        name: {"command": sys.executable,
-               "args": ["-m", "ajantik.proxy", "--name", lab.name, "--",
-                        spec["command"], *[str(a) for a in spec.get("args", [])]],
-               "env": {**(spec.get("env") or {}), "AJANTIK_HOME": home}}
-        for name, spec in plan.servers.items()}}
+
+    def entry(name: str, spec: dict[str, Any]) -> dict[str, Any]:
+        if spec.get("url"):  # the proxy finds URL and headers in Claude Code's config itself
+            return {"command": sys.executable,
+                    "args": ["-m", "ajantik.proxy", "--name", lab.name, "--remote", name,
+                             "--config-cwd", plan.cwd, "--via", spec["via"]],
+                    "env": {"AJANTIK_HOME": home}}
+        return {"command": sys.executable,
+                "args": ["-m", "ajantik.proxy", "--name", lab.name, "--",
+                         spec["command"], *[str(a) for a in spec.get("args", [])]],
+                "env": {**(spec.get("env") or {}), "AJANTIK_HOME": home}}
+    return {"mcpServers": {name: entry(name, spec) for name, spec in plan.servers.items()}}
 
 
 def claude_command(claude: str, plan: Plan, config: dict[str, Any]) -> list[str]:
@@ -286,7 +351,7 @@ Agent = Callable[[Plan, Lab, Path], tuple[str, str]]  # -> (stdout, stderr)
 
 def claude_agent(claude: str, timeout_s: int = DEFAULT_TIMEOUT) -> Agent:
     def run(plan: Plan, lab: Lab, cwd: Path) -> tuple[str, str]:
-        env = {**run_env(), "AJANTIK_HOME": str(lab.dir.parent.parent)}
+        env = {**run_env(), **remote_env(plan), "AJANTIK_HOME": str(lab.dir.parent.parent)}
         done = subprocess.run(claude_command(claude, plan, mcp_config(plan, lab)), cwd=cwd,
                               env=env, capture_output=True, text=True, timeout=timeout_s,
                               check=False)

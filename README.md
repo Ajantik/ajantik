@@ -82,12 +82,35 @@ Options that make the verdict firmer:
 
 Every run's cost, as Claude Code reports it, is in the results and the summary.
 
+A check reads your system the way the skill does, through the same connector, never through
+the fault proxy:
+
+```python
+#!/usr/bin/env python3
+from ajantik.check import connector, report
+
+problems = []
+with connector("crm") as crm:                      # as Claude Code has it configured here
+    for email in ["a@x.com", "b@y.com"]:
+        found = crm.json("search_contacts", {"query": email})
+        if len(found) != 1:
+            problems.append(f"{email}: {len(found)} contacts")
+report(problems)
+```
+
+**Remote connectors** (a URL in Claude Code's config, `"type": "http"` or `"sse"`) are tested
+the same way. With `headers` (an API key, `${VAR}` expanded from your environment) Ajantik
+talks to the server directly over Streamable HTTP. A server that wants an OAuth login, or speaks
+only the older SSE transport, is reached through
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote), which opens your browser once and
+keeps the token on your machine. Header values and query strings are never written to a plan, a
+report or a command line: the proxy reads them from Claude Code's config when it starts.
+
 How it works:
 
 - **The agent** is Claude Code (`claude -p`) on your own login, with your skill and your
   connectors, each started behind the proxy, in an empty working directory, with a spend cap
-  per run (`--budget`, default $0.50). Local (stdio) connectors only for now; remote ones are
-  listed and left out.
+  per run (`--budget`, default $0.50). Local (stdio) and remote (HTTP, SSE) connectors.
 - **The reviewer** is a different model (`--reviewer-model`, default Claude Haiku 4.5) with no
   tools. It reads the agent's last message and answers "did it claim the task was done?", and
   where the calls cannot show the outcome it compares what the agent wrote with the real data

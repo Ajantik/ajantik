@@ -37,9 +37,9 @@ def project(tmp_path, monkeypatch):
 
 def test_discovery_finds_skills_and_unwraps_servers(project):
     assert [s.name for s in at.list_skills(project)] == ["notes"]
-    servers, notes = at.discover_servers(project)
+    servers, _ = at.discover_servers(project)
     assert servers["store"]["command"] == FAKE[0] and servers["store"]["args"] == FAKE[1:]
-    assert "remote" not in servers and any("remote" in n for n in notes)
+    assert servers["remote"] == {"type": "http", "url": "https://example.com/mcp", "headers": {}}
     assert "ajantik" not in servers  # the test runner is never a connector under test
 
 
@@ -237,3 +237,11 @@ def test_the_damaged_reply_is_shown_as_it_was_and_as_the_agent_saw_it():
     text = at.damaged_call(call)
     assert 'search {"q": "jonas"}' in text and 'Real reply: [{"id": 1' in text
     assert text.endswith("What the assistant saw: []")
+
+
+def test_a_check_can_start_a_local_connector_too(project):
+    from ajantik.check import connector
+
+    with connector("store", project) as store:
+        assert store.text("store_value", {"field": "a", "value": "1"}) == "Stored (real)."
+        assert store.json("read_all") == {"a": "1"}

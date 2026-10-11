@@ -559,15 +559,31 @@ def _ok(rpc_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
 
 
-def serve(name: str, server: list[str], home: Path | None = None) -> None:
-    """Run the proxy on stdin/stdout. Only JSON-RPC goes to stdout; it is the protocol."""
+def serve(name: str, server: list[str] | Any, home: Path | None = None) -> None:
+    """Run the proxy on stdin/stdout. Only JSON-RPC goes to stdout; it is the protocol.
+    `server` is a local server's command, or a client already made (a remote server)."""
     # MCP stdio is UTF-8 with \n line ends; Windows defaults to neither.
     sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")  # type: ignore[union-attr]
     lab = Lab(name, home)
     lab.dir.mkdir(parents=True, exist_ok=True)
-    with MCPServer(server) as real:
+    with (MCPServer(server) if isinstance(server, list) else server) as real:
         FaultProxy(real, lab).serve(sys.stdin, sys.stdout)
+
+
+def remote_client(name: str, cwd: str, via: str) -> Any:
+    """The remote server `name` as Claude Code has it configured for `cwd`. URL and headers
+    are read here, at start, so a credential never sits in a plan, a lab or a command line."""
+    from ajantik.autotest import discover_servers
+    from ajantik.mcp_http import HTTPServer, bridge_command, expand
+
+    spec = discover_servers(Path(cwd))[0].get(name)
+    if not spec or not spec.get("url"):
+        raise SystemExit(f"STOP: no remote server {name!r} in Claude Code's config for {cwd}.")
+    url = expand(spec["url"])
+    if via == "http":
+        return HTTPServer(url, {k: expand(v) for k, v in spec["headers"].items()})
+    return MCPServer(bridge_command(url, "sse-only" if spec["type"] == "sse" else "http-first"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -576,8 +592,14 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="ajantik.proxy", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--name", required=True)
+    p.add_argument("--remote", help="a remote server's name in Claude Code's config")
+    p.add_argument("--config-cwd", default=".", help="the project whose config names it")
+    p.add_argument("--via", choices=("http", "bridge"), default="http")
     p.add_argument("server", nargs=argparse.REMAINDER, help="-- <real MCP server command>")
     args = p.parse_args(argv)
+    if args.remote:
+        serve(args.name, remote_client(args.remote, args.config_cwd, args.via))
+        return 0
     server = args.server[1:] if args.server[:1] == ["--"] else args.server
     if not server:
         raise SystemExit("STOP: no server command after `--`.")
