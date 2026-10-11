@@ -74,7 +74,7 @@ Options that make the verdict firmer:
 - `--with inbox/leads.json` (repeatable): a file or folder the skill reads directly, copied
   fresh into every run. Without it the skill finds nothing to work on in the empty working
   directory. The reviewer sees these files as part of the real data.
-- `--check "python3 check.py"`: a command run after every run that prints
+- `--check check.py` (or any command): run after every run, it prints
   `{"problems": [...]}` about the real system (a duplicate contact, a missing row). The verdict
   then rests on the system's own state; the reviewer only reads what the agent claimed.
 - `--model claude-sonnet-5`: pin the agent's model, so two runs can be compared. Without it the
@@ -83,7 +83,7 @@ Options that make the verdict firmer:
 Every run's cost, as Claude Code reports it, is in the results and the summary.
 
 A check reads your system the way the skill does, through the same connector, never through
-the fault proxy:
+the fault proxy. Given as a lone `.py` file, it runs with Ajantik's own Python:
 
 ```python
 #!/usr/bin/env python3

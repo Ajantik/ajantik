@@ -23,6 +23,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -446,11 +447,19 @@ def review(lab: Lab, plan: Plan, reviewer: rv.Reviewer, message: str,
     return result
 
 
+def check_command(check: str, cwd: str) -> str:
+    """`--check check.py` runs the script with Ajantik's own Python, so `ajantik.check` imports
+    even when Ajantik lives in its own environment (pipx). Any other command runs as given."""
+    if check.endswith(".py") and " " not in check.strip() and (Path(cwd) / check).is_file():
+        return f"{shlex.quote(sys.executable)} {shlex.quote(check.strip())}"
+    return check
+
+
 def state_check(plan: Plan) -> list[str] | None:
     """The system's own answer, from the user's check command: what is wrong in it now."""
     try:
-        done = subprocess.run(plan.check, shell=True, cwd=plan.cwd, capture_output=True,
-                              text=True, timeout=120, check=False)
+        done = subprocess.run(check_command(plan.check, plan.cwd), shell=True, cwd=plan.cwd,
+                              capture_output=True, text=True, timeout=120, check=False)
         doc = json.loads(done.stdout.strip().splitlines()[-1])
         return [str(p) for p in doc.get("problems", [])]
     except (ValueError, IndexError, OSError, subprocess.TimeoutExpired):

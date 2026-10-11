@@ -209,7 +209,9 @@ class Lab:
         known = {t["name"]: t for t in self.tools()}
         for t in tools:
             effect, basis = tool_effect(t)
-            known[t["name"]] = {"name": t["name"], "effect": effect, "basis": basis}
+            known[t["name"]] = {"name": t["name"], "effect": effect, "basis": basis,
+                                "description": str(t.get("description") or "")[:500],
+                                "inputSchema": t.get("inputSchema") or {}}
         self._write("tools.json", list(known.values()))
 
     def tools(self) -> list[dict[str, Any]]:

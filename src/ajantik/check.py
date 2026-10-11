@@ -17,7 +17,8 @@ through the fault proxy, so a check always sees the real state.
                 problems.append(f"{email}: {len(found)} contacts")
     report(problems)
 
-Run it as `ajantik test run ... --check "python3 check.py"`.
+Run it as `ajantik test run ... --check check.py`: a lone `.py` file runs with Ajantik's own
+Python, so this import works even when Ajantik was installed with pipx.
 """
 
 from __future__ import annotations

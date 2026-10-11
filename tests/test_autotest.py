@@ -245,3 +245,11 @@ def test_a_check_can_start_a_local_connector_too(project):
     with connector("store", project) as store:
         assert store.text("store_value", {"field": "a", "value": "1"}) == "Stored (real)."
         assert store.json("read_all") == {"a": "1"}
+
+
+def test_a_lone_check_script_runs_with_ajantiks_own_python(tmp_path):
+    (tmp_path / "check.py").write_text("from ajantik.check import report\nreport(['x'])\n")
+    assert sys.executable in at.check_command("check.py", str(tmp_path))
+    assert at.check_command("python3 other.py", str(tmp_path)) == "python3 other.py"
+    plan = at.Plan("s", "p", str(tmp_path), {}, {}, check="check.py")
+    assert at.state_check(plan) == ["x"]
