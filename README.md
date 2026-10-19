@@ -203,7 +203,7 @@ CDP_URL=http://127.0.0.1:9333 node step.js          # the skill, unchanged
 
   A small adapter reads units from the record (what the system holds) and from the skill's
   report (what it said), and each unit gets the verdict every Ajantik mode gives: correct, silent
-  wrong, reported honestly, over-cautious. On a real PCN-notification skill, a clean run already
+  wrong, reported honestly, over-cautious. On a real multi-step submission skill, a clean run already
   showed a step that printed "10 / 11", exited 0, and let the next step bind the missing component
   to an older record; a lost-save fault showed the save check reading "sent" as "saved".
 

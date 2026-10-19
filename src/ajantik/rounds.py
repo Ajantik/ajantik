@@ -168,7 +168,8 @@ def fault_ids(scenario: Scenario, only: list[str] | None) -> list[str]:
 def run_round(scenario_path: Path, out_dir: Path, agent_template: list[str], reps: int = 1,
               only: list[str] | None = None, timeout_s: int = DEFAULT_TIMEOUT_S,
               before_each: list[str] | None = None, dry_run: bool = False,
-              python: str | None = None, in_process: bool = False) -> dict:
+              python: str | None = None, in_process: bool = False,
+              quiet: bool = False) -> dict:
     # Absolute: every trial runs in a fresh directory, so a relative path in the wall
     # command (or in the agent command the caller writes) resolves against the wrong cwd.
     scenario_path = scenario_path.resolve()
@@ -245,8 +246,9 @@ def run_round(scenario_path: Path, out_dir: Path, agent_template: list[str], rep
                     _stop_http_wall(http_proc)
             trial.duration_s = round(time.monotonic() - t0, 2)
             trials.append(trial)
-            print(f"{stem}: exit={trial.exit_code} {trial.duration_s}s"
-                  f"{' TIMEOUT' if trial.timed_out else ''}", file=sys.stderr)
+            if not quiet:
+                print(f"{stem}: exit={trial.exit_code} {trial.duration_s}s"
+                      f"{' TIMEOUT' if trial.timed_out else ''}", file=sys.stderr)
 
     manifest = {
         "format": "ajantik.round.v1",

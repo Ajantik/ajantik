@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ajantik"
-version = "0.8.0"
+version = "0.8.1"
 description = "A crash test for AI agents: what does your agent tell you when its tools lie or fail?"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,6 +36,7 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 ajantik = "ajantik.cli:app"
+ajantik-pilot = "ajantik.pilot_cli:app"  # lab only: pilot delivery
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ajantik"]

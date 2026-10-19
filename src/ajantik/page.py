@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ajantik.agents import profile_for
+from ajantik.agents import agent_name, profile_for
 from ajantik.families import SIGNALS, family_of, signal_rank
 from ajantik.judge import interval_text
 from ajantik.rounds import manifest_path
@@ -98,7 +98,7 @@ def page_data(scenario_path: Path, rounds: dict[str, Path]) -> dict[str, Any]:
     first = json.loads(manifest_path(next(iter(rounds.values()))).read_text(encoding="utf-8"))
     return {"labels": labels, "rows": rows_out, "cells": cells, "judge": doc["judge"],
             "limitations": doc["limitations"], "task": scen.tasks[0].prompt,
-            "agent": " ".join(first.get("agent_template", [])[:1]) or "unknown",
+            "agent": agent_name(first.get("agent_template") or []),
             "skipped": skipped, "noVerdict": no_verdict}
 
 

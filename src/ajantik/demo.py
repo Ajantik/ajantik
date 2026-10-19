@@ -76,7 +76,9 @@ def run(scenario: Path, out: Path, reps: int = 3) -> Path:
     rounds = {}
     for style in ("blind", "verifying"):
         cmd = [sys.executable, "-m", "ajantik.demo", "agent", "--style", style, "--task", TASK]
-        run_round(scenario, out / style, cmd, reps=reps, only=faults, in_process=True)
+        run_round(scenario, out / style, cmd, reps=reps, only=faults, in_process=True,
+                  quiet=True)
+        print(f"{style} agent: {len(faults) * reps} runs", file=sys.stderr)
         rounds[f"{style} (scripted)"] = out / style
     report = out / "report.html"
     report.write_text(render(page_data(scenario, rounds), "Ajantik Demo"), encoding="utf-8")
